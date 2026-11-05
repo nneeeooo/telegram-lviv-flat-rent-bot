@@ -1,0 +1,12 @@
+# What to watch and what passes. Secrets go in .env, not here.
+# Street zone (Франківський р-н): data/streets.json, map: docs/zone.html.
+
+[filter]
+max_price_uah = 25000
+rooms = [1, 2]
+# floors 1..=max_floor, never the top floor
+max_floor = 5
+
+[sources]
+channels = ["orendakvartyr_ua"]
+bots = ["homierentbot"]

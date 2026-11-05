@@ -1,0 +1,5 @@
+/target
+.env
+# runtime state: seen listings + Telegram user session (full account access, never commit)
+/state
+*.session
