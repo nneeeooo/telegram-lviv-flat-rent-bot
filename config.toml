@@ -10,3 +10,5 @@ max_floor = 5
 [sources]
 channels = ["orendakvartyr_ua"]
 bots = ["homierentbot"]
+# LUN pages (no OLX listings: @homierentbot covers OLX)
+lun = ["https://lun.ua/rent/lviv/flats-frankivskyi-district"]

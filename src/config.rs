@@ -23,6 +23,9 @@ pub struct Sources {
     pub channels: Vec<String>,
     /// Bot usernames without `@`.
     pub bots: Vec<String>,
+    /// LUN listing pages (lun.ua), polled every 15 min.
+    #[serde(default)]
+    pub lun: Vec<String>,
 }
 
 impl Config {

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[derive(Serialize, Deserialize, Default)]
 pub struct State {
     /// Source username -> highest message id already handled.
-    pub last_seen: HashMap<String, i32>,
+    pub last_seen: HashMap<String, i64>,
     /// Fingerprints of recently sent posts: channels repost the same flat again and again.
     #[serde(default)]
     pub sent: VecDeque<u64>,

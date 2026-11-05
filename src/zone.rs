@@ -20,6 +20,8 @@ pub enum Place {
 struct Streets {
     listed: Vec<String>,
     adjacent: Vec<String>,
+    /// Zone outline, [lon, lat] points.
+    hull: Vec<[f64; 2]>,
 }
 
 struct Street {
@@ -27,11 +29,27 @@ struct Street {
     re: Regex,
 }
 
+static DATA: LazyLock<Streets> =
+    LazyLock::new(|| serde_json::from_str(include_str!("../data/streets.json")).expect("data/streets.json"));
+
 /// Matchers built once from the OSM names.
-static STREETS: LazyLock<Vec<Street>> = LazyLock::new(|| {
-    let s: Streets = serde_json::from_str(include_str!("../data/streets.json")).expect("data/streets.json");
-    s.listed.iter().chain(&s.adjacent).filter_map(|n| street(n)).collect()
-});
+static STREETS: LazyLock<Vec<Street>> =
+    LazyLock::new(|| DATA.listed.iter().chain(&DATA.adjacent).filter_map(|n| street(n)).collect());
+
+/// Point inside the zone outline (ray casting).
+pub fn in_zone(lat: f64, lon: f64) -> bool {
+    let h = &DATA.hull;
+    let mut inside = false;
+    let mut j = h.len() - 1;
+    for i in 0..h.len() {
+        let ([xi, yi], [xj, yj]) = (h[i], h[j]);
+        if (yi > lat) != (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
 
 /// "вулиця Євгена Коновальця" -> plain match on "коновальц…".
 /// "Київська вулиця" (adjective, also an ordinary word) -> only after "вул." / before a house number.
@@ -101,6 +119,13 @@ mod tests {
     fn ordinary_words_are_not_streets() {
         assert_eq!(place("Мила затишна квартира, глибока шафа, київська область"), Place::Outside);
         assert_eq!(place("Бажаю здоров'я🤝 Не полишаю спроб знайти у Львові житло."), Place::Outside);
+    }
+
+    #[test]
+    fn coordinates() {
+        assert!(super::in_zone(49.8300, 24.0040)); // Мельника / Єфремова
+        assert!(!super::in_zone(49.7983, 24.0107)); // Трускавецька, Франківський but south of the zone
+        assert!(!super::in_zone(49.8420, 24.0310)); // city centre
     }
 
     #[test]

@@ -5,14 +5,28 @@ use crate::rates::Rates;
 use crate::zone::Place;
 
 #[derive(Debug, Clone)]
+pub enum Photo {
+    /// Photo seen by the user account: downloaded, then uploaded by the bot.
+    Telegram(grammers_client::media::Photo),
+    /// Public image URL: Telegram fetches it itself.
+    Url(String),
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct Listing {
-    /// Telegram message id inside the source.
-    pub id: i32,
+    /// Id inside the source (Telegram message id, LUN page id).
+    pub id: i64,
     /// Link to the original post (bot chats have no per-message link: the bot's page).
     pub url: String,
     pub text: String,
-    /// Album photos (bot sources only; channel posts rely on the link preview).
-    pub photos: Vec<grammers_client::media::Photo>,
+    /// Album photos (bot and LUN sources; channel posts rely on the link preview).
+    pub photos: Vec<Photo>,
+    /// Structured sources (LUN) fill these; free-text posts are parsed from `text`.
+    pub facts: Option<Parsed>,
+    pub place: Option<Place>,
+    pub phone: Option<String>,
+    /// Dedupe key; default is the post text.
+    pub key: Option<String>,
 }
 
 /// 25000 -> "25 000".
@@ -96,6 +110,9 @@ impl Listing {
         if !missing.is_empty() {
             lines.push(format!("❔ не вказано: {}", missing.join(", ")));
         }
+        if let Some(phone) = &self.phone {
+            lines.push(format!("📞 {phone}"));
+        }
         lines.push(format!("🔗 {}", self.url));
         lines.join("
 ")
@@ -111,7 +128,7 @@ mod tests {
     #[test]
     fn card_format() {
         let text = "Оренда 2-кімн, вул. Коновальця 5\n6/9 поверх 47 кв м\nІндивідуальне опалення\nЦіна 550$\n#Власник";
-        let l = Listing { id: 7, url: "https://t.me/c/7".into(), text: text.into(), photos: vec![] };
+        let l = Listing { id: 7, url: "https://t.me/c/7".into(), text: text.into(), ..Default::default() };
         let card = l.card(&parse(text), &place(text), Some(Rates { usd: 45.0, eur: 50.0 }));
         assert_eq!(
             card,
@@ -124,7 +141,7 @@ mod tests {
         // Real @homierentbot message (shortened).
         let text = "450 $\nФранківський район · вул. Героїв УПА Перша\nКімнат — 1\nПлоща — 20 м² (кухня 3 м²)\n\
                     Поверх — 5 з 5\n\n🐾 БЕЗ тварин\n🔥 електроопалення\n🧺 пральна машина\n\nРієлтор\nOLX";
-        let l = Listing { id: 1, url: "https://www.olx.ua/d/uk/obyavlenie/x.html".into(), text: text.into(), photos: vec![] };
+        let l = Listing { id: 1, url: "https://www.olx.ua/d/uk/obyavlenie/x.html".into(), text: text.into(), ..Default::default() };
         let card = l.card(&parse(text), &place(text), Some(Rates { usd: 45.0, eur: 50.0 }));
         assert_eq!(
             card,
@@ -136,7 +153,7 @@ mod tests {
     #[test]
     fn card_flags_missing() {
         let text = "Здам 1к, Франківський район";
-        let l = Listing { id: 7, url: "https://t.me/c/7".into(), text: text.into(), photos: vec![] };
+        let l = Listing { id: 7, url: "https://t.me/c/7".into(), text: text.into(), ..Default::default() };
         let card = l.card(&parse(text), &place(text), None);
         assert_eq!(
             card,

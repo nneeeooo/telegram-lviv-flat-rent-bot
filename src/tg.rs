@@ -23,10 +23,16 @@ struct RespParams {
     retry_after: Option<u64>,
 }
 
+/// A photo to send: uploaded bytes, or a public URL Telegram fetches itself.
+pub enum PhotoData {
+    Bytes(Vec<u8>),
+    Url(String),
+}
+
 enum Body<'a> {
     Json(serde_json::Value),
     /// Rebuilt per attempt: a multipart form can be sent only once.
-    Photos { chat: i64, caption: &'a str, photos: &'a [Vec<u8>] },
+    Photos { chat: i64, caption: &'a str, photos: &'a [PhotoData] },
 }
 
 impl Bot {
@@ -41,7 +47,7 @@ impl Bot {
     }
 
     /// One photo or an album (2..=10) with `caption` under it.
-    pub async fn send_photos(&self, chat: i64, caption: &str, photos: &[Vec<u8>]) -> Result<()> {
+    pub async fn send_photos(&self, chat: i64, caption: &str, photos: &[PhotoData]) -> Result<()> {
         let method = if photos.len() == 1 { "sendPhoto" } else { "sendMediaGroup" };
         self.call(method, Body::Photos { chat, caption, photos }).await
     }
@@ -67,21 +73,34 @@ impl Bot {
     }
 }
 
-fn photo_form(chat: i64, caption: &str, photos: &[Vec<u8>]) -> Form {
-    let part = |i: usize| Part::bytes(photos[i].clone()).file_name(format!("p{i}.jpg")).mime_str("image/jpeg").unwrap();
+fn photo_form(chat: i64, caption: &str, photos: &[PhotoData]) -> Form {
+    let part = |b: &Vec<u8>, i: usize| Part::bytes(b.clone()).file_name(format!("p{i}.jpg")).mime_str("image/jpeg").unwrap();
     let form = Form::new().text("chat_id", chat.to_string());
     if photos.len() == 1 {
-        return form.text("caption", caption.to_string()).part("photo", part(0));
+        let form = form.text("caption", caption.to_string());
+        return match &photos[0] {
+            PhotoData::Bytes(b) => form.part("photo", part(b, 0)),
+            PhotoData::Url(u) => form.text("photo", u.clone()),
+        };
     }
     // Album: caption on the first item shows under the whole album.
-    let media: Vec<_> = (0..photos.len())
-        .map(|i| {
-            let mut m = json!({"type": "photo", "media": format!("attach://p{i}")});
+    let media: Vec<_> = photos
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let src = match p {
+                PhotoData::Bytes(_) => format!("attach://p{i}"),
+                PhotoData::Url(u) => u.clone(),
+            };
+            let mut m = json!({"type": "photo", "media": src});
             if i == 0 {
                 m["caption"] = json!(caption);
             }
             m
         })
         .collect();
-    (0..photos.len()).fold(form.text("media", json!(media).to_string()), |f, i| f.part(format!("p{i}"), part(i)))
+    photos.iter().enumerate().fold(form.text("media", json!(media).to_string()), |f, (i, p)| match p {
+        PhotoData::Bytes(b) => f.part(format!("p{i}"), part(b, i)),
+        PhotoData::Url(_) => f,
+    })
 }

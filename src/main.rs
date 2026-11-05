@@ -7,6 +7,7 @@
 mod config;
 mod filter;
 mod listing;
+mod lun;
 mod parse;
 mod rates;
 mod session;
@@ -26,6 +27,8 @@ use std::time::{Duration, Instant};
 /// Posts checked per source on the very first run.
 const FIRST_RUN: usize = 3;
 const RATES_EVERY: Duration = Duration::from_secs(12 * 3600);
+/// LUN is a website: poll it gently.
+const LUN_EVERY: Duration = Duration::from_secs(15 * 60);
 
 fn env(name: &str) -> Result<String> {
     std::env::var(name).with_context(|| format!("{name} not set"))
@@ -33,10 +36,10 @@ fn env(name: &str) -> Result<String> {
 
 /// Card for a post that passes the filter and was not sent before.
 fn evaluate(l: &Listing, cfg: &config::Config, rates: Option<Rates>, st: &mut state::State) -> Result<String, Skip> {
-    let p = parse::parse(&l.text);
-    let place = zone::place(&l.text);
+    let p = l.facts.clone().unwrap_or_else(|| parse::parse(&l.text));
+    let place = l.place.clone().unwrap_or_else(|| zone::place(&l.text));
     filter::decide(&l.text, &p, &place, &cfg.filter, rates)?;
-    if st.seen_before(&l.text) {
+    if st.seen_before(l.key.as_deref().unwrap_or(&l.text)) {
         return Err(Skip::Duplicate);
     }
     Ok(l.card(&p, &place, rates))
@@ -48,9 +51,12 @@ async fn deliver(user: &userbot::Userbot, bot: &tg::Bot, chat: i64, l: &Listing,
     if !l.photos.is_empty() {
         let mut photos = Vec::new();
         for p in &l.photos {
-            match user.download(p).await {
-                Ok(b) => photos.push(b),
-                Err(e) => eprintln!("photo of {}: {e:#}", l.id),
+            match p {
+                listing::Photo::Url(u) => photos.push(tg::PhotoData::Url(u.clone())),
+                listing::Photo::Telegram(p) => match user.download(p).await {
+                    Ok(b) => photos.push(tg::PhotoData::Bytes(b)),
+                    Err(e) => eprintln!("photo of {}: {e:#}", l.id),
+                },
             }
         }
         if !photos.is_empty() {
@@ -152,14 +158,25 @@ async fn main() -> Result<()> {
                 .collect();
             cards.reverse(); // oldest first, like live
             println!("@{name}: {} matches in the last {} messages", cards.len(), all.len());
-            for (l, card) in &cards {
-                if send {
-                    deliver(&user, &bot, chat, l, card).await?;
-                    tokio::time::sleep(Duration::from_millis(1100)).await;
-                } else {
-                    println!("---\n{card}");
-                }
-            }
+            send_cards(&user, &bot, chat, &cards, send).await?;
+        }
+        for page in cfg.sources.lun.iter().filter(|p| only.is_none_or(|o| o == "lun" || o == *p)) {
+            let all = lun::fetch(&http, page).await?;
+            let mut cards: Vec<(&Listing, String)> = all
+                .iter()
+                .filter_map(|l| {
+                    if all_posts {
+                        let card = l.card(l.facts.as_ref()?, l.place.as_ref()?, rates);
+                        Some((l, format!("🧪 тест, без фільтра\n{card}")))
+                    } else {
+                        evaluate(l, &cfg, rates, &mut st).ok().map(|c| (l, c))
+                    }
+                })
+                .take(n)
+                .collect();
+            cards.reverse();
+            println!("LUN {page}: {} matches in {} listings (OLX skipped)", cards.len(), all.len());
+            send_cards(&user, &bot, chat, &cards, send).await?;
         }
         return Ok(());
     }
@@ -177,6 +194,7 @@ async fn main() -> Result<()> {
     bot.send(chat, &format!("🏠 Бот запущено.\n{}", cfg.summary())).await?;
     println!("started: {} sources, poll every {}s", sources.len(), poll.as_secs());
 
+    let mut lun_at: Option<Instant> = None;
     loop {
         if rates.is_none() || rates_at.elapsed() > RATES_EVERY {
             match Rates::fetch(&http).await {
@@ -189,8 +207,58 @@ async fn main() -> Result<()> {
                 eprintln!("@{}: {e:#}", src.name);
             }
         }
+        if lun_at.is_none_or(|t| t.elapsed() > LUN_EVERY) {
+            lun_at = Some(Instant::now());
+            for page in &cfg.sources.lun {
+                if let Err(e) = check_lun(&http, &user, &bot, chat, page, &cfg, rates, &mut st).await {
+                    eprintln!("LUN {page}: {e:#}");
+                }
+            }
+        }
         tokio::time::sleep(poll).await;
     }
+}
+
+/// Print or send (~1 msg/s, the Bot API limit per chat) a batch of cards.
+async fn send_cards(user: &userbot::Userbot, bot: &tg::Bot, chat: i64, cards: &[(&Listing, String)], send: bool) -> Result<()> {
+    for (l, card) in cards {
+        if send {
+            deliver(user, bot, chat, l, card).await?;
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+        } else {
+            println!("---\n{card}");
+        }
+    }
+    Ok(())
+}
+
+/// New matching listings of one LUN page. LUN has no message order like Telegram, so progress is the
+/// sent/seen key list; on the first run only the newest FIRST_RUN matches are sent, the rest marked seen.
+#[allow(clippy::too_many_arguments)]
+async fn check_lun(
+    http: &reqwest::Client,
+    user: &userbot::Userbot,
+    bot: &tg::Bot,
+    chat: i64,
+    page: &str,
+    cfg: &config::Config,
+    rates: Option<Rates>,
+    st: &mut state::State,
+) -> Result<()> {
+    let marker = format!("lun:{page}");
+    let first_run = !st.last_seen.contains_key(&marker);
+    let mut sent = 0;
+    // Oldest first, so the chat reads in posting order.
+    for l in lun::fetch(http, page).await?.iter().rev() {
+        if let Ok(card) = evaluate(l, cfg, rates, st) {
+            if !first_run || sent < FIRST_RUN {
+                deliver(user, bot, chat, l, &card).await?;
+                sent += 1;
+            }
+        }
+    }
+    st.last_seen.insert(marker, 1);
+    st.save()
 }
 
 /// Send new matching posts of one source; remember progress after each post.

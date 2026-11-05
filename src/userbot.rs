@@ -3,7 +3,7 @@
 //! Privacy: the client only ever reads the chats named in `config.toml` (by polling their history).
 //! The live update stream, which would carry every chat of the account, is dropped unread.
 
-use crate::listing::Listing;
+use crate::listing::{Listing, Photo as ListingPhoto};
 use crate::session;
 use anyhow::{Context, Result, anyhow, bail};
 use grammers_client::session::storages::MemorySession;
@@ -78,11 +78,11 @@ impl Userbot {
     }
 
     /// Messages newer than `after`, oldest first. `after = None` (first run) returns the latest `first_run` ones.
-    pub async fn fetch(&self, src: &Source, after: Option<i32>, first_run: usize) -> Result<Vec<Listing>> {
+    pub async fn fetch(&self, src: &Source, after: Option<i64>, first_run: usize) -> Result<Vec<Listing>> {
         let mut it = self.client.iter_messages(src.peer).limit(50);
         let (mut out, mut albums) = (Vec::new(), Albums::default());
         while let Some(m) = it.next().await? {
-            if after.is_some_and(|a| m.id() <= a) || (after.is_none() && out.len() >= first_run) {
+            if after.is_some_and(|a| i64::from(m.id()) <= a) || (after.is_none() && out.len() >= first_run) {
                 break;
             }
             out.extend(albums.take(src, &m));
@@ -158,19 +158,19 @@ impl Albums {
             photos.extend(self.0.remove(&g).unwrap_or_default());
         }
         photos.sort_by_key(|(id, _)| *id);
-        Some(src.listing(m, photos.into_iter().map(|(_, p)| p).take(MAX_PHOTOS).collect()))
+        Some(src.listing(m, photos.into_iter().map(|(_, p)| ListingPhoto::Telegram(p)).take(MAX_PHOTOS).collect()))
     }
 }
 
 impl Source {
-    fn listing(&self, m: &Message, photos: Vec<Photo>) -> Listing {
+    fn listing(&self, m: &Message, photos: Vec<ListingPhoto>) -> Listing {
         let url = if self.is_channel {
             format!("https://t.me/{}/{}", self.name, m.id())
         } else {
             // Bot chats have no public per-message link: use the listing's own link if the bot gives one.
             message_url(m).unwrap_or_else(|| format!("https://t.me/{}", self.name))
         };
-        Listing { id: m.id(), url, text: m.text().to_string(), photos }
+        Listing { id: m.id().into(), url, text: m.text().to_string(), photos, ..Default::default() }
     }
 }
 
