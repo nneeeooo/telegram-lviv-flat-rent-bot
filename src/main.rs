@@ -1,4 +1,4 @@
-//! Lviv flat-rent watcher: reads Telegram channels/bots, filters offers, notifies one chat.
+//! Lviv flat-rent watcher: reads Telegram channels/bots, filters offers, notifies the configured chats.
 //!
 //! `telegram-lviv-flat-rent-bot login`                 — one-time interactive login of the user account.
 //! `telegram-lviv-flat-rent-bot`                       — watch sources and send matching flats.
@@ -45,28 +45,47 @@ fn evaluate(l: &Listing, cfg: &config::Config, rates: Option<Rates>, st: &mut st
     Ok(l.card(&p, &place, rates))
 }
 
-/// Send a card: with the listing's album photos if it has them (bot sources), else as text with link preview.
-/// A failed photo download or upload falls back to text, so a flat is never lost for a photo.
-async fn deliver(user: &userbot::Userbot, bot: &tg::Bot, chat: i64, l: &Listing, card: &str) -> Result<()> {
-    if !l.photos.is_empty() {
-        let mut photos = Vec::new();
-        for p in &l.photos {
-            match p {
-                listing::Photo::Url(u) => photos.push(tg::PhotoData::Url(u.clone())),
-                listing::Photo::Telegram(p) => match user.download(p).await {
-                    Ok(b) => photos.push(tg::PhotoData::Bytes(b)),
-                    Err(e) => eprintln!("photo of {}: {e:#}", l.id),
-                },
-            }
+/// Send a card to every chat: with the listing's album photos if it has them (bot sources, LUN), else as
+/// text with link preview. A failed photo download or upload falls back to text, so a flat is never lost
+/// for a photo. One chat failing (e.g. a recipient blocked the bot) does not stop the others; the call
+/// fails only if no chat got the card, so the watcher retries it next poll.
+async fn deliver(user: &userbot::Userbot, bot: &tg::Bot, chats: &[i64], l: &Listing, card: &str) -> Result<()> {
+    let mut photos = Vec::new();
+    for p in &l.photos {
+        match p {
+            listing::Photo::Url(u) => photos.push(tg::PhotoData::Url(u.clone())),
+            listing::Photo::Telegram(p) => match user.download(p).await {
+                Ok(b) => photos.push(tg::PhotoData::Bytes(b)),
+                Err(e) => eprintln!("photo of {}: {e:#}", l.id),
+            },
         }
-        if !photos.is_empty() {
+    }
+    let mut last_err = None;
+    let mut delivered = 0;
+    for &chat in chats {
+        let sent = if photos.is_empty() {
+            bot.send(chat, card).await
+        } else {
             match bot.send_photos(chat, card, &photos).await {
-                Ok(()) => return Ok(()),
-                Err(e) => eprintln!("album of {}: {e:#}", l.id),
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    eprintln!("album of {} to {chat}: {e:#}", l.id);
+                    bot.send(chat, card).await
+                }
+            }
+        };
+        match sent {
+            Ok(()) => delivered += 1,
+            Err(e) => {
+                eprintln!("card {} to {chat}: {e:#}", l.id);
+                last_err = Some(e);
             }
         }
     }
-    bot.send(chat, card).await
+    match (delivered, last_err) {
+        (0, Some(e)) => Err(e),
+        _ => Ok(()),
+    }
 }
 
 #[tokio::main]
@@ -82,7 +101,11 @@ async fn main() -> Result<()> {
     }
 
     let token = env("TELEGRAM_BOT_TOKEN")?;
-    let chat: i64 = env("TELEGRAM_CHAT_ID")?.trim().parse().context("TELEGRAM_CHAT_ID must be a number")?;
+    // One or more recipients, comma-separated: "343065165,123456789".
+    let chats: Vec<i64> = env("TELEGRAM_CHAT_ID")?
+        .split(',')
+        .map(|s| s.trim().parse().with_context(|| format!("TELEGRAM_CHAT_ID: {s:?} is not a chat id")))
+        .collect::<Result<_>>()?;
     let cfg = config::Config::load(&std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".into()))?;
     let poll = Duration::from_secs(std::env::var("POLL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60));
     let bot = tg::Bot::new(&token);
@@ -118,7 +141,7 @@ async fn main() -> Result<()> {
             println!("@{name}: {} posts in {days} d, {} pass. Skipped: {skipped:?}", all.len(), cards.len());
             for (l, card) in &cards {
                 if send {
-                    deliver(&user, &bot, chat, l, card).await?;
+                    deliver(&user, &bot, &chats, l, card).await?;
                     tokio::time::sleep(Duration::from_millis(1100)).await; // Bot API: ~1 msg/s per chat
                 } else {
                     println!("---\n{card}");
@@ -158,7 +181,7 @@ async fn main() -> Result<()> {
                 .collect();
             cards.reverse(); // oldest first, like live
             println!("@{name}: {} matches in the last {} messages", cards.len(), all.len());
-            send_cards(&user, &bot, chat, &cards, send).await?;
+            send_cards(&user, &bot, &chats, &cards, send).await?;
         }
         for page in cfg.sources.lun.iter().filter(|p| only.is_none_or(|o| o == "lun" || o == *p)) {
             let all = lun::fetch(&http, page).await?;
@@ -176,7 +199,7 @@ async fn main() -> Result<()> {
                 .collect();
             cards.reverse();
             println!("LUN {page}: {} matches in {} listings (OLX skipped)", cards.len(), all.len());
-            send_cards(&user, &bot, chat, &cards, send).await?;
+            send_cards(&user, &bot, &chats, &cards, send).await?;
         }
         return Ok(());
     }
@@ -203,14 +226,14 @@ async fn main() -> Result<()> {
             }
         }
         for src in &sources {
-            if let Err(e) = check(&user, &bot, chat, src, &cfg, rates, &mut st).await {
+            if let Err(e) = check(&user, &bot, &chats, src, &cfg, rates, &mut st).await {
                 eprintln!("@{}: {e:#}", src.name);
             }
         }
         if lun_at.is_none_or(|t| t.elapsed() > LUN_EVERY) {
             lun_at = Some(Instant::now());
             for page in &cfg.sources.lun {
-                if let Err(e) = check_lun(&http, &user, &bot, chat, page, &cfg, rates, &mut st).await {
+                if let Err(e) = check_lun(&http, &user, &bot, &chats, page, &cfg, rates, &mut st).await {
                     eprintln!("LUN {page}: {e:#}");
                 }
             }
@@ -220,10 +243,10 @@ async fn main() -> Result<()> {
 }
 
 /// Print or send (~1 msg/s, the Bot API limit per chat) a batch of cards.
-async fn send_cards(user: &userbot::Userbot, bot: &tg::Bot, chat: i64, cards: &[(&Listing, String)], send: bool) -> Result<()> {
+async fn send_cards(user: &userbot::Userbot, bot: &tg::Bot, chats: &[i64], cards: &[(&Listing, String)], send: bool) -> Result<()> {
     for (l, card) in cards {
         if send {
-            deliver(user, bot, chat, l, card).await?;
+            deliver(user, bot, chats, l, card).await?;
             tokio::time::sleep(Duration::from_millis(1100)).await;
         } else {
             println!("---\n{card}");
@@ -239,7 +262,7 @@ async fn check_lun(
     http: &reqwest::Client,
     user: &userbot::Userbot,
     bot: &tg::Bot,
-    chat: i64,
+    chats: &[i64],
     page: &str,
     cfg: &config::Config,
     rates: Option<Rates>,
@@ -252,7 +275,7 @@ async fn check_lun(
     for l in lun::fetch(http, page).await?.iter().rev() {
         if let Ok(card) = evaluate(l, cfg, rates, st) {
             if !first_run || sent < FIRST_RUN {
-                deliver(user, bot, chat, l, &card).await?;
+                deliver(user, bot, chats, l, &card).await?;
                 sent += 1;
             }
         }
@@ -265,7 +288,7 @@ async fn check_lun(
 async fn check(
     user: &userbot::Userbot,
     bot: &tg::Bot,
-    chat: i64,
+    chats: &[i64],
     src: &userbot::Source,
     cfg: &config::Config,
     rates: Option<Rates>,
@@ -274,7 +297,7 @@ async fn check(
     let after = st.last_seen.get(&src.name).copied();
     for l in user.fetch(src, after, FIRST_RUN).await? {
         if let Ok(card) = evaluate(&l, cfg, rates, st) {
-            deliver(user, bot, chat, &l, &card).await?;
+            deliver(user, bot, chats, &l, &card).await?;
         }
         st.last_seen.insert(src.name.clone(), l.id);
         st.save()?;
