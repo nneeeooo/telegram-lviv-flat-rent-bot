@@ -27,6 +27,8 @@ pub struct Listing {
     pub phone: Option<String>,
     /// Dedupe key; default is the post text.
     pub key: Option<String>,
+    /// Source badge on top of the card: "🧢 OLX", "🦊 LUN", "⭐️ Viktor".
+    pub source: &'static str,
 }
 
 /// 25000 -> "25 000".
@@ -43,9 +45,11 @@ fn thousands(n: u32) -> String {
 }
 
 impl Listing {
-    /// Unified card in blocks separated by a blank line: price and place, the flat, who rents and how to
+    /// Unified card in blocks separated by a blank line: source badge, price and place, the flat, who rents and how to
     /// call, the link, then every missing fact on its own line. Empty blocks are left out.
     /// ```text
+    /// 🦊 LUN
+    ///
     /// 💰 550 $ ≈ 25 355 грн
     /// 📍 вул. Коновальця · Франківський р-н
     ///
@@ -125,7 +129,8 @@ impl Listing {
 
         let link = vec![format!("🔗 {}", self.url)];
         let missing: Vec<String> = missing.into_iter().map(String::from).collect();
-        [head, flat, contact, link, missing]
+        let source: Vec<String> = [self.source].into_iter().filter(|s| !s.is_empty()).map(String::from).collect();
+        [source, head, flat, contact, link, missing]
             .into_iter()
             .filter(|b| !b.is_empty())
             .map(|b| b.join("\n"))
@@ -174,6 +179,13 @@ mod tests {
              🤝 рієлтор\n\n\
              🔗 https://www.olx.ua/d/uk/obyavlenie/x.html"
         );
+    }
+
+    #[test]
+    fn card_starts_with_source_badge() {
+        let text = "Оренда 1к, вул. Коновальця 5, 15000 грн";
+        let l = Listing { url: "https://t.me/c/7".into(), text: text.into(), source: "⭐️ Viktor", ..Default::default() };
+        assert!(l.card(&parse(text), &place(text), None).starts_with("⭐️ Viktor\n\n💰 15 000 грн\n"));
     }
 
     #[test]

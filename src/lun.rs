@@ -145,6 +145,7 @@ fn listing(c: Card) -> Listing {
         place: Some(place),
         phone: c.phones.unwrap_or_default().first().map(|p| format!("+{}", p.trim_start_matches('+'))),
         // The same flat on several sites shares a group.
+        source: "🦊 LUN",
         key: Some(format!("lun:{}", c.group_id.map(|g| g.to_string().trim_matches('"').to_string()).unwrap_or_else(|| c.id.to_string()))),
     }
 }

@@ -172,7 +172,9 @@ impl Source {
         };
         // Phone only for channel posts: bot listings come from OLX, which hides the number.
         let phone = if self.is_channel { crate::parse::phone(m.text()) } else { None };
-        Listing { id: m.id().into(), url, text: m.text().to_string(), photos, phone, ..Default::default() }
+        // Viktor runs the channel; the bot relays OLX.
+        let source = if self.is_channel { "⭐️ Viktor" } else { "🧢 OLX" };
+        Listing { id: m.id().into(), url, text: m.text().to_string(), photos, phone, source, ..Default::default() }
     }
 }
 
