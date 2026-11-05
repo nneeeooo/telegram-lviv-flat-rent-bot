@@ -170,7 +170,9 @@ impl Source {
             // Bot chats have no public per-message link: use the listing's own link if the bot gives one.
             message_url(m).unwrap_or_else(|| format!("https://t.me/{}", self.name))
         };
-        Listing { id: m.id().into(), url, text: m.text().to_string(), photos, ..Default::default() }
+        // Phone only for channel posts: bot listings come from OLX, which hides the number.
+        let phone = if self.is_channel { crate::parse::phone(m.text()) } else { None };
+        Listing { id: m.id().into(), url, text: m.text().to_string(), photos, phone, ..Default::default() }
     }
 }
 

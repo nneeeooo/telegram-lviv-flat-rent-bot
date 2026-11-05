@@ -43,79 +43,94 @@ fn thousands(n: u32) -> String {
 }
 
 impl Listing {
-    /// Unified card, in the style of @homierentbot:
+    /// Unified card in blocks separated by a blank line: price and place, the flat, who rents and how to
+    /// call, the link, then every missing fact on its own line. Empty blocks are left out.
     /// ```text
     /// 💰 550 $ ≈ 25 355 грн
-    /// 📍 Франківський р-н · вул. Коновальця
-    /// 🏠 2 кімн. · 47 м² · поверх 6 з 9
-    /// 🔥 індивідуальне опалення · 👤 власник
-    /// ❔ не вказано: …
+    /// 📍 вул. Коновальця · Франківський р-н
+    ///
+    /// 🏠 2 кімн. · 47 м²
+    /// 🪜 поверх 6 з 9
+    ///
+    /// 👤 власник
+    /// 📞 +380…
+    ///
     /// 🔗 https://t.me/orendakvartyr_ua/247032
+    ///
+    /// ❔ не вказано: опалення
     /// ```
     pub fn card(&self, p: &Parsed, place: &Place, rates: Option<Rates>) -> String {
-        let mut missing = Vec::new();
-        let mut lines = Vec::new();
+        let (mut head, mut flat, mut contact, mut missing) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
 
         match p.price {
-            Some(pr) if pr.currency == Currency::Uah => lines.push(format!("💰 {} грн", thousands(pr.amount))),
+            Some(pr) if pr.currency == Currency::Uah => head.push(format!("💰 {} грн", thousands(pr.amount))),
             Some(pr) => {
                 let sym = if pr.currency == Currency::Usd { "$" } else { "€" };
                 let uah = rates.map(|r| format!(" ≈ {} грн", thousands(r.to_uah(pr)))).unwrap_or_default();
-                lines.push(format!("💰 {} {sym}{uah}", thousands(pr.amount)));
+                head.push(format!("💰 {} {sym}{uah}", thousands(pr.amount)));
             }
-            None => missing.push("ціна"),
+            None => missing.push("❔ не вказано: ціна"),
         }
 
-        lines.push(match place {
-            Place::Street(s) => format!("📍 Франківський р-н · вул. {s}"),
-            Place::DistrictOnly => "📍 Франківський р-н · ⚠️ вулицю не вказано".to_string(),
-            Place::Outside => "📍 ⛔ поза зоною".to_string(), // only in unfiltered test cards
-        });
+        match place {
+            Place::Street(s) => head.push(format!("📍 вул. {s} · Франківський р-н")),
+            Place::DistrictOnly => {
+                head.push("📍 Франківський р-н".to_string());
+                missing.push("❔ не вказано: вулиця");
+            }
+            Place::Outside => head.push("📍 ⛔ поза зоною".to_string()), // only in unfiltered test cards
+        }
 
-        let mut flat = Vec::new();
+        let mut rooms = Vec::new();
         match (p.studio, p.rooms) {
-            (true, _) => flat.push("студія".to_string()),
-            (false, Some(r)) => flat.push(format!("{r} кімн.")),
-            (false, None) => missing.push("кімнати"),
+            (true, _) => rooms.push("студія 1 кімн.".to_string()),
+            (false, Some(r)) => rooms.push(format!("{r} кімн.")),
+            (false, None) => missing.push("❔ не вказано: кімнати"),
         }
-        if let Some(a) = p.area {
-            flat.push(format!("{a} м²"));
+        match p.area {
+            Some(a) => rooms.push(format!("{a} м²")),
+            None => missing.push("❔ не вказано: площа"),
         }
-        match p.floor {
-            Some((f, Some(t))) => flat.push(format!("поверх {f} з {t}")),
-            Some((f, None)) => {
-                flat.push(format!("поверх {f}"));
-                missing.push("поверховість");
-            }
-            None => missing.push("поверх"),
-        }
-        if !flat.is_empty() {
-            lines.push(format!("🏠 {}", flat.join(" · ")));
+        if !rooms.is_empty() {
+            flat.push(format!("🏠 {}", rooms.join(" · ")));
         }
 
-        let mut extra = Vec::new();
+        match p.floor {
+            Some((f, Some(t))) => flat.push(format!("🪜 поверх {f} з {t}")),
+            Some((f, None)) => {
+                flat.push(format!("🪜 поверх {f}"));
+                missing.push("❔ не вказано: поверховість");
+            }
+            None => missing.push("❔ не вказано: поверх"),
+        }
+
         match p.heating {
-            Heating::Individual => extra.push("🔥 індивідуальне опалення"),
-            Heating::Central => extra.push("🏢 центральне опалення"),
-            Heating::Unknown => missing.push("опалення"),
+            Heating::Individual => flat.push("🔥 індивідуальне опалення".to_string()),
+            Heating::Central => flat.push("🏢 центральне опалення".to_string()),
+            Heating::Unknown => missing.push("❔ не вказано: опалення"),
         }
+
         match p.seller {
-            Seller::Owner => extra.push("👤 власник"),
-            Seller::Agency => extra.push("🤝 рієлтор"),
-            Seller::Unknown => {}
+            Seller::Owner => contact.push("👤 власник".to_string()),
+            Seller::Agency => contact.push("🤝 рієлтор".to_string()),
+            Seller::Unknown => missing.push("❔ не вказано: власник чи рієлтор"),
         }
-        if !extra.is_empty() {
-            lines.push(extra.join(" · "));
+
+        match &self.phone {
+            Some(phone) => contact.push(format!("📞 {phone}")),
+            // OLX hides phones, so their absence there is not news.
+            None if !self.url.contains("olx.") => missing.push("❔ не вказано: телефон"),
+            None => {}
         }
-        if !missing.is_empty() {
-            lines.push(format!("❔ не вказано: {}", missing.join(", ")));
-        }
-        if let Some(phone) = &self.phone {
-            lines.push(format!("📞 {phone}"));
-        }
-        lines.push(format!("🔗 {}", self.url));
-        lines.join("
-")
+
+        let link = vec![format!("🔗 {}", self.url)];
+        let missing: Vec<String> = missing.into_iter().map(String::from).collect();
+        [head, flat, contact, link, missing]
+            .into_iter()
+            .filter(|b| !b.is_empty())
+            .map(|b| b.join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 }
 
@@ -127,12 +142,21 @@ mod tests {
 
     #[test]
     fn card_format() {
-        let text = "Оренда 2-кімн, вул. Коновальця 5\n6/9 поверх 47 кв м\nІндивідуальне опалення\nЦіна 550$\n#Власник";
-        let l = Listing { id: 7, url: "https://t.me/c/7".into(), text: text.into(), ..Default::default() };
+        let text = "Оренда 2-кімн, вул. Коновальця 5\n6/9 поверх 47 кв м\nІндивідуальне опалення\nЦіна 550$\n#Власник\n097-13-12-911";
+        let l = Listing {
+            id: 7,
+            url: "https://t.me/c/7".into(),
+            text: text.into(),
+            phone: crate::parse::phone(text),
+            ..Default::default()
+        };
         let card = l.card(&parse(text), &place(text), Some(Rates { usd: 45.0, eur: 50.0 }));
         assert_eq!(
             card,
-            "💰 550 $ ≈ 24 750 грн\n📍 Франківський р-н · вул. Коновальця\n🏠 2 кімн. · 47 м² · поверх 6 з 9\n🔥 індивідуальне опалення · 👤 власник\n🔗 https://t.me/c/7"
+            "💰 550 $ ≈ 24 750 грн\n📍 вул. Коновальця · Франківський р-н\n\n\
+             🏠 2 кімн. · 47 м²\n🪜 поверх 6 з 9\n🔥 індивідуальне опалення\n\n\
+             👤 власник\n📞 +380971312911\n\n\
+             🔗 https://t.me/c/7"
         );
     }
 
@@ -145,19 +169,23 @@ mod tests {
         let card = l.card(&parse(text), &place(text), Some(Rates { usd: 45.0, eur: 50.0 }));
         assert_eq!(
             card,
-            "💰 450 $ ≈ 20 250 грн\n📍 Франківський р-н · вул. Героїв УПА\n🏠 1 кімн. · 20 м² · поверх 5 з 5\n\
-             🔥 індивідуальне опалення · 🤝 рієлтор\n🔗 https://www.olx.ua/d/uk/obyavlenie/x.html"
+            "💰 450 $ ≈ 20 250 грн\n📍 вул. Героїв УПА · Франківський р-н\n\n\
+             🏠 1 кімн. · 20 м²\n🪜 поверх 5 з 5\n🔥 індивідуальне опалення\n\n\
+             🤝 рієлтор\n\n\
+             🔗 https://www.olx.ua/d/uk/obyavlenie/x.html"
         );
     }
 
     #[test]
     fn card_flags_missing() {
-        let text = "Здам 1к, Франківський район";
+        let text = "Здам студію, Франківський район";
         let l = Listing { id: 7, url: "https://t.me/c/7".into(), text: text.into(), ..Default::default() };
         let card = l.card(&parse(text), &place(text), None);
         assert_eq!(
             card,
-            "📍 Франківський р-н · ⚠️ вулицю не вказано\n🏠 1 кімн.\n❔ не вказано: ціна, поверх, опалення\n🔗 https://t.me/c/7"
+            "📍 Франківський р-н\n\n🏠 студія 1 кімн.\n\n🔗 https://t.me/c/7\n\n\
+             ❔ не вказано: ціна\n❔ не вказано: вулиця\n❔ не вказано: площа\n❔ не вказано: поверх\n\
+             ❔ не вказано: опалення\n❔ не вказано: власник чи рієлтор\n❔ не вказано: телефон"
         );
     }
 }

@@ -210,6 +210,24 @@ pub fn seller(t: &str) -> Seller {
     }
 }
 
+/// Ukrainian phone in any common spelling: 0985211717, 097-13-12-911, +380 63 133 8828, (067) 310-23-32.
+/// Not glued to a preceding digit, so "15000" never starts a number.
+static PHONE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?:^|[^\d+])((?:\+\s*)?(?:3\s*8\s*)?\(?0(?:[\s()-]*\d){9})"));
+
+/// First full phone number of the post as `+380XXXXXXXXX`. Masked numbers ("0987049***") are skipped.
+pub fn phone(text: &str) -> Option<String> {
+    PHONE.captures_iter(text).find_map(|c| {
+        let m = c.get(1)?;
+        if text[m.end()..].starts_with('*') {
+            return None;
+        }
+        let digits: String = m.as_str().chars().filter(char::is_ascii_digit).collect();
+        let local = digits.strip_prefix("38").unwrap_or(&digits);
+        (local.len() == 10).then(|| format!("+38{local}"))
+    })
+}
+
 static NOT_FLAT: LazyLock<Regex> = LazyLock::new(|| re(r"будин|котедж|приміщенн|магазин|офіс|склад|комерці|\bбар(?:у|\b)|кафе|ресторан|кав'ярн|салон"));
 static RENTED: LazyLock<Regex> = LazyLock::new(|| re(r"\bздано|стоп\s*🛑|🛑"));
 
@@ -307,6 +325,18 @@ mod tests {
         assert_eq!(p("Пропозиція від АН").seller, Seller::Agency);
         assert_eq!(p("6/9 поверх 47 кв м").area, Some(47.0));
         assert_eq!(p("📐 43,1 м²").area, Some(43.1));
+    }
+
+    #[test]
+    fn phones() {
+        assert_eq!(phone("Володимир АН \n0985211717").as_deref(), Some("+380985211717"));
+        assert_eq!(phone("📞 097-13-12-911 Іванка").as_deref(), Some("+380971312911"));
+        assert_eq!(phone("📲Пропозиція від АН \n+380 63 133 8828").as_deref(), Some("+380631338828"));
+        assert_eq!(phone("☎️Деталі:\n0 50 066 24 92— Роман").as_deref(), Some("+380500662492"));
+        assert_eq!(phone("(067) 310-23-32").as_deref(), Some("+380673102332"));
+        assert_eq!(phone("+380938834***Здано✅").as_deref(), None);
+        assert_eq!(phone("066-22-8***").as_deref(), None);
+        assert_eq!(phone("Ціна 15000 грн, 47 кв м").as_deref(), None);
     }
 
     #[test]
