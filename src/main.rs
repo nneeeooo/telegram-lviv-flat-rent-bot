@@ -191,8 +191,8 @@ async fn main() -> Result<()> {
     user.save()?;
     let mut st = state::State::load(state_dir.join("state.json"))?;
 
-    bot.send(chat, &format!("🏠 Бот запущено.\n{}", cfg.summary())).await?;
-    println!("started: {} sources, poll every {}s", sources.len(), poll.as_secs());
+    // Start is logged only: a chat message on every restart is noise.
+    println!("started: {} sources, poll every {}s\n{}", sources.len(), poll.as_secs(), cfg.summary());
 
     let mut lun_at: Option<Instant> = None;
     loop {
