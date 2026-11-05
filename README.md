@@ -11,7 +11,6 @@ and sends matches to one Telegram chat. No database: state is a JSON file in `st
 - [x] Photos from bot sources (album), link preview for channel posts
 - [x] LUN (lun.ua) district page every 15 min: structured cards with phone, photos, direct link; OLX
       listings skipped (@homierentbot covers OLX)
-- [ ] Later: Facebook groups
 
 LUN has no API; the watcher reads the cards LUN embeds in its server-rendered page (a path `robots.txt`
 allows, no query string), one request per 15 min. Zone check uses the listing's coordinates.
