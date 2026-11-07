@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 const FIRST_RUN: usize = 3;
 const RATES_EVERY: Duration = Duration::from_secs(12 * 3600);
 /// LUN is a website: poll it gently.
-const LUN_EVERY: Duration = Duration::from_secs(15 * 60);
+const LUN_EVERY: Duration = Duration::from_secs(5 * 60);
 
 fn env(name: &str) -> Result<String> {
     std::env::var(name).with_context(|| format!("{name} not set"))

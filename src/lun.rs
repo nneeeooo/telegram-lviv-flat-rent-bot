@@ -61,7 +61,7 @@ static PUSH: LazyLock<Regex> =
 pub async fn fetch(http: &reqwest::Client, page: &str) -> Result<Vec<Listing>> {
     let html = http
         .get(page)
-        .header("User-Agent", "telegram-lviv-flat-rent-bot (personal, polls every 15 min)")
+        .header("User-Agent", "telegram-lviv-flat-rent-bot (personal, polls every 5 min)")
         .send()
         .await?
         .error_for_status()?
