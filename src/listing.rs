@@ -31,6 +31,16 @@ pub struct Listing {
     pub source: &'static str,
 }
 
+/// Source badge by the listing's own site: dom.ria shows up via @homierentbot and LUN alike.
+pub fn badge(url: &str, default: &'static str) -> &'static str {
+    if url.contains("dom.ria.com") { "📘 Dom.ria" } else { default }
+}
+
+/// Sites that hide the phone behind a click: a missing phone there is not news.
+fn hides_phone(url: &str) -> bool {
+    url.contains("olx.") || url.contains("dom.ria.com")
+}
+
 /// 25000 -> "25 000".
 fn thousands(n: u32) -> String {
     let s = n.to_string();
@@ -122,8 +132,7 @@ impl Listing {
 
         match &self.phone {
             Some(phone) => contact.push(format!("📞 {phone}")),
-            // OLX hides phones, so their absence there is not news.
-            None if !self.url.contains("olx.") => missing.push("❔ не вказано: телефон"),
+            None if !hides_phone(&self.url) => missing.push("❔ не вказано: телефон"),
             None => {}
         }
 

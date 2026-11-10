@@ -4,7 +4,7 @@
 //!
 //! OLX listings are skipped: @homierentbot already covers OLX.
 
-use crate::listing::{Listing, Photo};
+use crate::listing::{self, Listing, Photo};
 use crate::parse::{Currency, Heating, Parsed, Price, Seller};
 use crate::zone::{self, Place};
 use anyhow::{Context, Result};
@@ -32,6 +32,8 @@ struct Card {
     heating_system_name: Option<String>,
     is_owner: Option<bool>,
     header: Option<String>,
+    /// Address line: "Трускавецька вул., 2-В, Франківський, Львів, …". `header` can be an ad title instead.
+    geo: Option<String>,
     text: Option<String>,
     site: Option<Site>,
     /// [lon, lat]
@@ -95,6 +97,12 @@ fn cards(html: &str) -> Result<Vec<Card>> {
         .collect())
 }
 
+/// "Княгині Ольги вул., 120-а, Франківський…" -> "Княгині Ольги".
+fn street_name(address: &str) -> String {
+    let first = address.split(',').next().unwrap_or_default();
+    first.split_whitespace().filter(|w| !matches!(*w, "вул." | "вул" | "вулиця")).collect::<Vec<_>>().join(" ")
+}
+
 fn listing(c: Card) -> Listing {
     let currency = match c.currency.as_deref() {
         Some("usd") => Some(Currency::Usd),
@@ -121,17 +129,23 @@ fn listing(c: Card) -> Listing {
         not_flat: false,
         rented: false,
     };
-    let header = c.header.clone().unwrap_or_default();
-    let street = header.split(',').next().unwrap_or_default().trim().to_string();
-    let in_zone = c.location.as_deref().is_some_and(|l| l.len() == 2 && zone::in_zone(l[1], l[0]));
-    let place = match zone::place(&format!("вул. {header}")) {
-        Place::Street(s) => Place::Street(s),
-        _ if in_zone => Place::Street(street),
-        _ => Place::Outside,
+    let address = c.geo.as_deref().or(c.header.as_deref()).unwrap_or_default();
+    let street = street_name(address);
+    // Coordinates decide when LUN has them: a street name alone over-matches (Княгині Ольги runs far
+    // south of the zone). Without coordinates, fall back to the street name.
+    let place = match c.location.as_deref() {
+        Some([lon, lat]) if zone::in_zone(*lat, *lon) => Place::Street(street),
+        Some([_, _]) => Place::Outside,
+        _ => match zone::place(&format!("вул. {street}")) {
+            Place::Street(_) => Place::Street(street),
+            _ => Place::Outside,
+        },
     };
+    let url = c.url_raw.unwrap_or_else(|| "https://lun.ua/".into());
     Listing {
         id: c.id,
-        url: c.url_raw.unwrap_or_else(|| "https://lun.ua/".into()),
+        source: listing::badge(&url, "🦊 LUN"),
+        url,
         text: c.text.unwrap_or_default(),
         photos: c
             .images
@@ -145,7 +159,6 @@ fn listing(c: Card) -> Listing {
         place: Some(place),
         phone: c.phones.unwrap_or_default().first().map(|p| format!("+{}", p.trim_start_matches('+'))),
         // The same flat on several sites shares a group.
-        source: "🦊 LUN",
         key: Some(format!("lun:{}", c.group_id.map(|g| g.to_string().trim_matches('"').to_string()).unwrap_or_else(|| c.id.to_string()))),
     }
 }
@@ -183,5 +196,22 @@ mod tests {
         assert_eq!(l.url, "https://rieltor.ua/lvov/flats-rent/view/13195052/");
         assert!(matches!(&l.photos[0], Photo::Url(u) if u.ends_with("images/offers/1.jpg")));
         assert_eq!(l.key.as_deref(), Some("lun:g1"));
+    }
+
+    #[test]
+    fn coordinates_decide_and_dom_ria_gets_its_badge() {
+        let html = page(
+            r#"[{"id":1,"urlRaw":"https://dom.ria.com/uk/realty-x-35125207.html","header":"Довгострокова оренда 1к Квартира",
+                "geo":"Художня вул., 3, Франківський, Львів","location":[24.0012,49.8303],"site":{"internalName":"dom.ria.com"}},
+               {"id":2,"urlRaw":"https://rieltor.ua/lvov/flats-rent/view/1/","header":"Княгині Ольги вул., 120-а",
+                "geo":"Княгині Ольги вул., 120-а, Франківський, Львів","location":[23.9985,49.8040]}]"#,
+        );
+        let l: Vec<Listing> = cards(&html).unwrap().into_iter().map(listing).collect();
+        // Ad title in `header` is ignored: the street comes from `geo`.
+        assert_eq!(l[0].place, Some(Place::Street("Художня".into())));
+        assert_eq!(l[0].source, "📘 Dom.ria");
+        // A listed street, but the far south end, outside the zone.
+        assert_eq!(l[1].place, Some(Place::Outside));
+        assert_eq!(l[1].source, "🦊 LUN");
     }
 }

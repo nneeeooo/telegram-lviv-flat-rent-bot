@@ -51,13 +51,15 @@ pub fn in_zone(lat: f64, lon: f64) -> bool {
     inside
 }
 
-/// "вулиця Євгена Коновальця" -> plain match on "коновальц…".
-/// "Київська вулиця" (adjective, also an ordinary word) -> only after "вул." / before a house number.
+/// A street counts only where the post gives it as an address: after "вул." / "вулиця" / "просп." /
+/// "кут", on an "Адреса:" line (one word may sit in between: "вул. Княгині Ольги"), or right before a
+/// house number ("Шафарика 2"). A bare name is too often something else: "Костел святої Ольги",
+/// the agent "Ольга", "Мельник" as a surname, "мила квартира".
 fn street(osm: &str) -> Option<Street> {
     let words: Vec<&str> = osm.split_whitespace().collect();
-    let (adjective, name) = match words.as_slice() {
-        [first, rest @ ..] if *first == "вулиця" || *first == "площа" => (false, rest.to_vec()),
-        [rest @ .., last] if *last == "вулиця" => (true, rest.to_vec()),
+    let name = match words.as_slice() {
+        [first, rest @ ..] if *first == "вулиця" || *first == "площа" => rest.to_vec(),
+        [rest @ .., last] if *last == "вулиця" => rest.to_vec(),
         _ => return None,
     };
     // Last word identifies the street; too short to be distinctive -> keep the last two.
@@ -74,13 +76,10 @@ fn street(osm: &str) -> Option<Street> {
         return None;
     }
     let s = regex::escape(&stem);
-    // Names that are also ordinary words ("бажаю здоров'я") need an address context too.
-    let common = ["Здоровʼя", "Воля", "Мила"].contains(&key.as_str());
-    let pattern = if adjective || common || name.len() == 1 && key.chars().count() < 7 {
-        format!(r"(?:вул\w*\.?|просп\w*\.?|адрес\w*:[^\n]*)\s*{s}\w*|\b{s}\w*,?\s*\d")
-    } else {
-        format!(r"\b{s}\w*")
-    };
+    // Same line only; a house number is 1-3 digits (so "Ольга 0672820705" is a name and a phone).
+    let pattern = format!(
+        r"(?:\bвул\w*\.?|\bпросп\w*\.?|\bпр\.|\bкут\w*|адрес\w*:[^\n]*?)[^\S\n]*(?:\S+[^\S\n]+)?{s}\w*|\b{s}\w*[^\S\n]*,?[^\S\n]*\d{{1,3}}(?:\D|$)"
+    );
     Some(Street { short: key, re: Regex::new(&pattern).ok()? })
 }
 
@@ -119,6 +118,19 @@ mod tests {
     fn ordinary_words_are_not_streets() {
         assert_eq!(place("Мила затишна квартира, глибока шафа, київська область"), Place::Outside);
         assert_eq!(place("Бажаю здоров'я🤝 Не полишаю спроб знайти у Львові житло."), Place::Outside);
+        // Real false matches: the flat is on another street, "Ольга" is a church / the agent.
+        assert_eq!(place("Оренда | вул. Хотинська, 7\n📍Район Костелу святої Ольги та Єлизавети"), Place::Outside);
+        assert_eq!(place("Оренда дворівневої квартири вул. Жовківська ( ближній центр)\nОльга\nПропозиція від АН"), Place::Outside);
+        assert_eq!(place("Ціна 18000\nМельник Ірина, Петро Антонович"), Place::Outside);
+        assert_eq!(place("📍 вул. Хотинська\nОльга 0672820705"), Place::Outside);
+    }
+
+    #[test]
+    fn street_with_a_word_before_it() {
+        assert_eq!(place("📍 вул. Княгині Ольги"), Place::Street("Ольги".into()));
+        assert_eq!(place("Франківський район · вул. Героїв УПА Перша"), Place::Street("Героїв УПА".into()));
+        assert_eq!(place("ОРЕНДА 2-КІМНАТНОЇ КВАРТИРИ | вул. Антоновича🏡"), Place::Street("Антоновича".into()));
+        assert_eq!(place("Шафарика 2, поруч Мельника 5"), Place::Street("Мельника".into()));
     }
 
     #[test]

@@ -39,7 +39,10 @@ fn evaluate(l: &Listing, cfg: &config::Config, rates: Option<Rates>, st: &mut st
     let p = l.facts.clone().unwrap_or_else(|| parse::parse(&l.text));
     let place = l.place.clone().unwrap_or_else(|| zone::place(&l.text));
     filter::decide(&l.text, &p, &place, &cfg.filter, rates)?;
-    if st.seen_before(l.key.as_deref().unwrap_or(&l.text)) {
+    let seen_text = st.seen_before(l.key.as_deref().unwrap_or(&l.text));
+    // The same dom.ria / rieltor ad reaches us via @homierentbot and LUN: one link, one card.
+    let seen_url = !l.url.starts_with("https://t.me/") && st.seen_before(&l.url);
+    if seen_text || seen_url {
         return Err(Skip::Duplicate);
     }
     Ok(l.card(&p, &place, rates))
@@ -148,6 +151,17 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        return Ok(());
+    }
+
+    // `history <bot username> [n]`: the cards our bot sent you, to state/history.json (for reviewing filter mistakes).
+    if args.get(1).map(String::as_str) == Some("history") {
+        let name = args.get(2).context("usage: history <bot username> [n]")?;
+        let n: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(500);
+        let src = user.resolve(name, false).await?;
+        let cards: Vec<_> = user.newest(&src, n).await?.into_iter().map(|l| (l.id, l.text)).collect();
+        state::write_atomic(&state_dir.join("history.json"), &serde_json::to_vec_pretty(&cards)?)?;
+        println!("{} cards -> state/history.json", cards.len());
         return Ok(());
     }
 
