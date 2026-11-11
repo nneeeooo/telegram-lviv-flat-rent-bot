@@ -27,6 +27,22 @@ struct Streets {
 struct Street {
     short: String,
     re: Regex,
+    /// The same name in an OLX URL slug ("...-na-vul-generala-chuprinki-59-ID11CRYM").
+    slug: Regex,
+}
+
+/// Regex for a Cyrillic stem as OLX transliterates it in ad URLs: "кімнатна" -> "kmnatna",
+/// "героїв" -> "gerov" (і/ї usually dropped, so optional), "х" -> "h", "ч" -> "ch".
+fn olx_translit(stem: &str) -> String {
+    stem.chars()
+        .map(|c| match c {
+            'а' => "a", 'б' => "b", 'в' => "v", 'г' => "g", 'д' => "d", 'е' => "e", 'є' => "(?:ye|e)",
+            'ж' => "zh", 'з' => "z", 'и' => "i", 'і' | 'ї' => "i?", 'й' => "y", 'к' => "k", 'л' => "l",
+            'м' => "m", 'н' => "n", 'о' => "o", 'п' => "p", 'р' => "r", 'с' => "s", 'т' => "t", 'у' => "u",
+            'ф' => "f", 'х' => "h", 'ц' => "ts", 'ч' => "ch", 'ш' => "sh", 'щ' => "sch", 'ю' => "yu",
+            'я' => "ya", ' ' | '-' => "-", _ => "",
+        })
+        .collect()
 }
 
 static DATA: LazyLock<Streets> =
@@ -80,7 +96,15 @@ fn street(osm: &str) -> Option<Street> {
     let pattern = format!(
         r"(?:\bвул\w*\.?|\bпросп\w*\.?|\bпр\.|\bкут\w*|адрес\w*:[^\n]*?)[^\S\n]*(?:\S+[^\S\n]+)?{s}\w*|\b{s}\w*[^\S\n]*,?[^\S\n]*\d{{1,3}}(?:\D|$)"
     );
-    Some(Street { short: name.join(" "), re: Regex::new(&pattern).ok()? })
+    let slug = format!(r"(?:^|[-/]){}[a-z]*(?:-|$)", olx_translit(&stem));
+    Some(Street { short: name.join(" "), re: Regex::new(&pattern).ok()?, slug: Regex::new(&slug).ok()? })
+}
+
+/// Zone street named in an OLX ad's URL (its title): `.../obyavlenie/<title-slug>-ID…html`.
+/// Some ads give the street only in the title, which @homierentbot does not repeat in its text.
+pub fn street_from_olx_url(url: &str) -> Option<String> {
+    let slug = url.split("/obyavlenie/").nth(1)?.split("-ID").next()?.to_lowercase();
+    STREETS.iter().find(|s| s.slug.is_match(&slug)).map(|s| s.short.clone())
 }
 
 static DISTRICT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"франківськ\w*\s+(?:р-н|район|р\.)|р-н\s+франківськ").unwrap());
@@ -108,6 +132,21 @@ pub fn place(text: &str) -> Place {
 #[cfg(test)]
 mod tests {
     use super::{Place, place};
+
+    #[test]
+    fn street_in_olx_title() {
+        use super::street_from_olx_url as olx;
+        let u = |slug: &str| format!("https://www.olx.ua/d/uk/obyavlenie/{slug}.html");
+        // Real @homierentbot links.
+        assert_eq!(olx(&u("zdatsya-v-orendu-2-kmnatna-kvartira-na-vul-saharova-ID11BOVg")).as_deref(), Some("Академіка Андрія Сахарова"));
+        assert_eq!(olx(&u("orenda-2-kmnatno-kvartiri-na-vul-generala-chuprinki-59-ID11CRYM")).as_deref(), Some("Генерала Чупринки"));
+        assert_eq!(olx(&u("orenda-1-km-vul-boguna-ID11BKou")).as_deref(), Some("Івана Богуна"));
+        assert_eq!(olx(&u("orenda-kvartiri-vul-gerov-upa-ID11DV7j")).as_deref(), Some("Героїв УПА"));
+        assert_eq!(olx(&u("1-kmnatna-kvartira-v-orendu-vul-poltehnchna-10-ID11DkIW")).as_deref(), Some("Політехнічна"));
+        assert_eq!(olx(&u("orenda-kvartiri-zhk-na-truskavetsky-ID11BOBB")), None);
+        assert_eq!(olx(&u("zdayu-kvartiru-v-orendu-ID11Dw0T")), None);
+        assert_eq!(olx("https://dom.ria.com/uk/realty-x-35125207.html"), None);
+    }
 
     #[test]
     fn zone_streets() {

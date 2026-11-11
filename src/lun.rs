@@ -2,7 +2,7 @@
 //! Next.js payload (`self.__next_f.push([1,"…"])`), with price, rooms, floor, heating, coordinates,
 //! phones, photos and the link to the source site. robots.txt allows these paths (no `?` query).
 //!
-//! OLX listings are skipped: @homierentbot already covers OLX.
+//! Only rieltor.ua listings are kept: OLX and dom.ria reach us through @homierentbot with better data.
 
 use crate::listing::{self, Listing, Photo};
 use crate::parse::{Currency, Heating, Parsed, Price, Seller};
@@ -59,7 +59,7 @@ struct Image {
 static PUSH: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)"#).unwrap());
 
-/// Fetch one LUN listing page; newest cards first, OLX ones dropped.
+/// Fetch one LUN listing page; newest cards first, rieltor.ua ones only.
 pub async fn fetch(http: &reqwest::Client, page: &str) -> Result<Vec<Listing>> {
     let html = http
         .get(page)
@@ -71,12 +71,12 @@ pub async fn fetch(http: &reqwest::Client, page: &str) -> Result<Vec<Listing>> {
         .await?;
     let mut cards = cards(&html)?;
     cards.sort_by_key(|c| std::cmp::Reverse(c.id));
-    Ok(cards.into_iter().filter(|c| !is_olx(c)).map(listing).collect())
+    Ok(cards.into_iter().filter(is_rieltor).map(listing).collect())
 }
 
-fn is_olx(c: &Card) -> bool {
-    c.site.as_ref().is_some_and(|s| s.internal_name.contains("olx"))
-        || c.url_raw.as_deref().is_some_and(|u| u.contains("olx."))
+fn is_rieltor(c: &Card) -> bool {
+    c.site.as_ref().is_some_and(|s| s.internal_name.contains("rieltor"))
+        || c.url_raw.as_deref().is_some_and(|u| u.contains("rieltor.ua"))
 }
 
 /// The page's `realties.cards` array.
@@ -174,18 +174,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_cards_and_skips_olx() {
+    fn parses_cards_and_keeps_only_rieltor() {
         let html = page(
             r#"[{"id":4731263865,"groupId":"g1","urlRaw":"https://rieltor.ua/lvov/flats-rent/view/13195052/",
                 "price":500,"currency":"usd","roomCount":2,"areaTotal":73,"floor":3,"floorCount":15,
                 "heatingSystemName":"individual","isOwner":false,"header":"Мельника вул., 5",
                 "text":"Здається квартира","site":{"internalName":"rieltor.ua"},"location":[24.004,49.830],
                 "images":[{"imageId":"offers/1"},{"imageId":"offers/2"}],"phones":["380979072029"]},
-               {"id":2,"urlRaw":"https://www.olx.ua/d/x.html","site":{"internalName":"olx.ua"}}]"#,
+               {"id":2,"urlRaw":"https://www.olx.ua/d/x.html","site":{"internalName":"olx.ua"}},
+               {"id":3,"urlRaw":"https://dom.ria.com/uk/realty-x-1.html","site":{"internalName":"dom.ria.com"}}]"#,
         );
         let cards = cards(&html).unwrap();
-        assert_eq!(cards.len(), 2);
-        let l: Vec<Listing> = cards.into_iter().filter(|c| !is_olx(c)).map(listing).collect();
+        assert_eq!(cards.len(), 3);
+        let l: Vec<Listing> = cards.into_iter().filter(is_rieltor).map(listing).collect();
         assert_eq!(l.len(), 1);
         let l = &l[0];
         let f = l.facts.as_ref().unwrap();

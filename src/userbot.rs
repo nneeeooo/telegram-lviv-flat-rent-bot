@@ -174,7 +174,13 @@ impl Source {
         let phone = if self.is_channel { crate::parse::phone(m.text()) } else { None };
         // Viktor runs the channel; the bot relays OLX.
         let source = if self.is_channel { "⭐️ Viktor" } else { crate::listing::badge(&url, "🧢 OLX") };
-        Listing { id: m.id().into(), url, text: m.text().to_string(), photos, phone, source, ..Default::default() }
+        // The bot's text has no ad title; for OLX the title survives in the link. A street named only
+        // there still counts; a street in the text wins.
+        let place = match crate::zone::place(m.text()) {
+            crate::zone::Place::Street(s) => Some(crate::zone::Place::Street(s)),
+            _ => crate::zone::street_from_olx_url(&url).map(crate::zone::Place::Street),
+        };
+        Listing { id: m.id().into(), url, text: m.text().to_string(), photos, phone, source, place, ..Default::default() }
     }
 }
 
