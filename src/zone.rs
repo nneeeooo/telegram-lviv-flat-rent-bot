@@ -80,7 +80,7 @@ fn street(osm: &str) -> Option<Street> {
     let pattern = format!(
         r"(?:\bвул\w*\.?|\bпросп\w*\.?|\bпр\.|\bкут\w*|адрес\w*:[^\n]*?)[^\S\n]*(?:\S+[^\S\n]+)?{s}\w*|\b{s}\w*[^\S\n]*,?[^\S\n]*\d{{1,3}}(?:\D|$)"
     );
-    Some(Street { short: key, re: Regex::new(&pattern).ok()? })
+    Some(Street { short: name.join(" "), re: Regex::new(&pattern).ok()? })
 }
 
 static DISTRICT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"франківськ\w*\s+(?:р-н|район|р\.)|р-н\s+франківськ").unwrap());
@@ -106,12 +106,12 @@ mod tests {
 
     #[test]
     fn zone_streets() {
-        assert_eq!(place("📍 Вул. Лазаренка (кут Сахарова)"), Place::Street("Сахарова".into()));
-        assert_eq!(place("Оренда на вул. Коновальця, 22"), Place::Street("Коновальця".into()));
+        assert_eq!(place("📍 Вул. Лазаренка (кут Сахарова)"), Place::Street("Академіка Андрія Сахарова".into()));
+        assert_eq!(place("Оренда на вул. Коновальця, 22"), Place::Street("Євгена Коновальця".into()));
         assert_eq!(place("ЖК Кінескоп (Вул. Героїв УПА )"), Place::Street("Героїв УПА".into()));
         assert_eq!(place("біля вулиці Грюнвальдської"), Place::Street("Ґрюнвальдська".into()));
         assert_eq!(place("вул. Київська 5"), Place::Street("Київська".into()));
-        assert_eq!(place("Адреса: Львів, Франківський район, вулиця Княгині Ольги, 120-а"), Place::Street("Ольги".into()));
+        assert_eq!(place("Адреса: Львів, Франківський район, вулиця Княгині Ольги, 120-а"), Place::Street("Княгині Ольги".into()));
     }
 
     #[test]
@@ -127,10 +127,13 @@ mod tests {
 
     #[test]
     fn street_with_a_word_before_it() {
-        assert_eq!(place("📍 вул. Княгині Ольги"), Place::Street("Ольги".into()));
+        assert_eq!(place("📍 вул. Княгині Ольги"), Place::Street("Княгині Ольги".into()));
+        assert_eq!(place("Оренда, вулиця Княгині Ольги"), Place::Street("Княгині Ольги".into()));
+        assert_eq!(place("вул. Кн. Ольги, 5"), Place::Street("Княгині Ольги".into()));
+        assert_eq!(place("2к квартира, Княгині Ольги 5а"), Place::Street("Княгині Ольги".into()));
         assert_eq!(place("Франківський район · вул. Героїв УПА Перша"), Place::Street("Героїв УПА".into()));
-        assert_eq!(place("ОРЕНДА 2-КІМНАТНОЇ КВАРТИРИ | вул. Антоновича🏡"), Place::Street("Антоновича".into()));
-        assert_eq!(place("Шафарика 2, поруч Мельника 5"), Place::Street("Мельника".into()));
+        assert_eq!(place("ОРЕНДА 2-КІМНАТНОЇ КВАРТИРИ | вул. Антоновича🏡"), Place::Street("Володимира Антоновича".into()));
+        assert_eq!(place("Шафарика 2, поруч Мельника 5"), Place::Street("Андрія Мельника".into()));
     }
 
     #[test]
