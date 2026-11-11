@@ -231,6 +231,8 @@ async fn main() -> Result<()> {
     // Start is logged only: a chat message on every restart is noise.
     println!("started: {} sources, poll every {}s\n{}", sources.len(), poll.as_secs(), cfg.summary());
 
+    tokio::spawn(answer_start(tg::Bot::new(&token), chats.clone(), cfg.summary()));
+
     let mut lun_at: Option<Instant> = None;
     loop {
         if rates.is_none() || rates_at.elapsed() > RATES_EVERY {
@@ -253,6 +255,33 @@ async fn main() -> Result<()> {
             }
         }
         tokio::time::sleep(poll).await;
+    }
+}
+
+/// Answer `/start` with a ping, so recipients can check the bot is alive. Only the configured
+/// recipients get an answer; anyone else who finds the bot is ignored.
+async fn answer_start(bot: tg::Bot, chats: Vec<i64>, summary: String) {
+    let ping = format!("✅ Бот працює.\nКанал Віктора й @homierentbot перевіряю щохвилини, LUN кожні 5 хв.\n\n{summary}");
+    let mut offset = 0;
+    loop {
+        match bot.updates(offset).await {
+            Ok(updates) => {
+                for u in updates {
+                    offset = u.update_id + 1;
+                    let Some(m) = u.message else { continue };
+                    let is_start = m.text.as_deref().is_some_and(|t| t.trim_start().starts_with("/start"));
+                    if is_start && chats.contains(&m.chat.id) {
+                        if let Err(e) = bot.send(m.chat.id, &ping).await {
+                            eprintln!("/start reply to {}: {e:#}", m.chat.id);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{e:#}");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        }
     }
 }
 

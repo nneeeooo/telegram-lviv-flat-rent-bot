@@ -23,6 +23,31 @@ struct RespParams {
     retry_after: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct UpdatesResp {
+    ok: bool,
+    result: Option<Vec<Update>>,
+    description: Option<String>,
+}
+
+/// Incoming update; only text messages matter (commands).
+#[derive(Deserialize)]
+pub struct Update {
+    pub update_id: i64,
+    pub message: Option<Message>,
+}
+
+#[derive(Deserialize)]
+pub struct Message {
+    pub chat: Chat,
+    pub text: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct Chat {
+    pub id: i64,
+}
+
 /// A photo to send: uploaded bytes, or a public URL Telegram fetches itself.
 pub enum PhotoData {
     Bytes(Vec<u8>),
@@ -44,6 +69,22 @@ impl Bot {
     /// Text message; Telegram shows the link preview of the first URL.
     pub async fn send(&self, chat: i64, text: &str) -> Result<()> {
         self.call("sendMessage", Body::Json(json!({"chat_id": chat, "text": text}))).await
+    }
+
+    /// Long-poll for messages sent to the bot (waits up to 50 s; the HTTP timeout is 60 s).
+    pub async fn updates(&self, offset: i64) -> Result<Vec<Update>> {
+        let r: UpdatesResp = self
+            .http
+            .post(format!("{}/getUpdates", self.base))
+            .json(&json!({"offset": offset, "timeout": 50, "allowed_updates": ["message"]}))
+            .send()
+            .await?
+            .json()
+            .await?;
+        match (r.ok, r.result) {
+            (true, Some(u)) => Ok(u),
+            _ => bail!("getUpdates: {}", r.description.unwrap_or_default()),
+        }
     }
 
     /// One photo or an album (2..=10) with `caption` under it.

@@ -52,7 +52,7 @@ pub fn in_zone(lat: f64, lon: f64) -> bool {
 }
 
 /// A street counts only where the post gives it as an address: after "вул." / "вулиця" / "просп." /
-/// "кут", on an "Адреса:" line (one word may sit in between: "вул. Княгині Ольги"), or right before a
+/// "кут", on an "Адреса:" line (one word may sit in between: "вул. Генерала Чупринки"), or right before a
 /// house number ("Шафарика 2"). A bare name is too often something else: "Костел святої Ольги",
 /// the agent "Ольга", "Мельник" as a surname, "мила квартира".
 fn street(osm: &str) -> Option<Street> {
@@ -111,7 +111,9 @@ mod tests {
         assert_eq!(place("ЖК Кінескоп (Вул. Героїв УПА )"), Place::Street("Героїв УПА".into()));
         assert_eq!(place("біля вулиці Грюнвальдської"), Place::Street("Ґрюнвальдська".into()));
         assert_eq!(place("вул. Київська 5"), Place::Street("Київська".into()));
-        assert_eq!(place("Адреса: Львів, Франківський район, вулиця Княгині Ольги, 120-а"), Place::Street("Княгині Ольги".into()));
+        // Княгині Ольги is out of the zone (removed on request): a named address elsewhere is Outside.
+        assert_eq!(place("Адреса: Львів, Франківський район, вулиця Княгині Ольги, 120-а"), Place::Outside);
+        assert_eq!(place("Оренда 2к, вул. Княгині Ольги 5а"), Place::Outside);
     }
 
     #[test]
@@ -127,10 +129,9 @@ mod tests {
 
     #[test]
     fn street_with_a_word_before_it() {
-        assert_eq!(place("📍 вул. Княгині Ольги"), Place::Street("Княгині Ольги".into()));
-        assert_eq!(place("Оренда, вулиця Княгині Ольги"), Place::Street("Княгині Ольги".into()));
-        assert_eq!(place("вул. Кн. Ольги, 5"), Place::Street("Княгині Ольги".into()));
-        assert_eq!(place("2к квартира, Княгині Ольги 5а"), Place::Street("Княгині Ольги".into()));
+        assert_eq!(place("📍 вул. Генерала Чупринки"), Place::Street("Генерала Чупринки".into()));
+        assert_eq!(place("Оренда, вулиця Генерала Чупринки"), Place::Street("Генерала Чупринки".into()));
+        assert_eq!(place("2к квартира, Чупринки 59"), Place::Street("Генерала Чупринки".into()));
         assert_eq!(place("Франківський район · вул. Героїв УПА Перша"), Place::Street("Героїв УПА".into()));
         assert_eq!(place("ОРЕНДА 2-КІМНАТНОЇ КВАРТИРИ | вул. Антоновича🏡"), Place::Street("Володимира Антоновича".into()));
         assert_eq!(place("Шафарика 2, поруч Мельника 5"), Place::Street("Андрія Мельника".into()));

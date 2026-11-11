@@ -37,8 +37,8 @@ impl Config {
     pub fn summary(&self) -> String {
         let f = &self.filter;
         format!(
-            "Фільтр: до {} грн, кімнат {:?}, поверх 1–{} (не останній).\nДжерела: канали {:?}, боти {:?}",
-            f.max_price_uah, f.rooms, f.max_floor, self.sources.channels, self.sources.bots
+            "Фільтр: до {} грн, кімнат {:?}, поверх 1–{} (не останній).\nДжерела: канали {:?}, боти {:?}, сторінок LUN: {}",
+            f.max_price_uah, f.rooms, f.max_floor, self.sources.channels, self.sources.bots, self.sources.lun.len()
         )
     }
 }
