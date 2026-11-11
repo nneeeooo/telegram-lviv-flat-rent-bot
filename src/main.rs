@@ -4,6 +4,7 @@
 //! `telegram-lviv-flat-rent-bot`                       — watch sources and send matching flats.
 //! `telegram-lviv-flat-rent-bot backfill <days> [--send]` — replay recent channel posts (stats; `--send` sends).
 
+mod analyze;
 mod config;
 mod filter;
 mod listing;
@@ -95,6 +96,10 @@ async fn deliver(user: &userbot::Userbot, bot: &tg::Bot, chats: &[i64], l: &List
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let state_dir = PathBuf::from(std::env::var("STATE_DIR").unwrap_or_else(|_| "state".into()));
+    if std::env::args().nth(1).as_deref() == Some("analyze") {
+        let sample = std::env::args().nth(2).context("usage: analyze <sample.json>")?;
+        return analyze::run(&sample, &state_dir);
+    }
     let api_id: i32 = env("TG_API_ID")?.trim().parse().context("TG_API_ID must be a number")?;
     let user = userbot::Userbot::connect(api_id, state_dir.join("tg-session.json"))?;
     let args: Vec<String> = std::env::args().collect();

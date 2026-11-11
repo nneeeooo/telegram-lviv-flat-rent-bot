@@ -88,6 +88,11 @@ static DISTRICT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"франків�
 static ADDRESS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bвул\w*\.?|\bпросп\w*|\bпр\.|адрес\w*:|📍").unwrap());
 
+/// The post names some street address (in the zone or not).
+pub fn has_address(text: &str) -> bool {
+    ADDRESS.is_match(&normalize(text))
+}
+
 pub fn place(text: &str) -> Place {
     let t = normalize(text);
     if let Some(s) = STREETS.iter().find(|s| s.re.is_match(&t)) {

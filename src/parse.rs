@@ -53,6 +53,8 @@ pub fn normalize(text: &str) -> String {
         .replace('ґ', "г")
         .replace(['ʼ', '’', '`', '´'], "'")
         .replace('\u{a0}', " ")
+        // Emoji variation selector / joiner count as word chars and glue "✔️2 поверх" together.
+        .replace(['\u{fe0f}', '\u{200d}'], "")
 }
 
 fn re(p: &str) -> Regex {
@@ -62,8 +64,8 @@ fn re(p: &str) -> Regex {
 static PRICE_LINE: LazyLock<Regex> = LazyLock::new(|| re(r"ціна|цін[аи]|вартіст|💰|💵|💸|оренд"));
 static PRICE: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?x)
-        (?:(?P<pre>[$€])\s*(?P<n0>\d{1,3}(?:[\s.]\d{3})+|\d+))
-      | (?:(?P<n>\d{1,3}(?:[\s.]\d{3})+|\d+)\s*(?P<k>тис\.?|к\b)?\s*
+        (?:(?P<pre>[$€])\s*(?P<n0>\d{1,3}(?:[\s.,]\d{3})+|\d+))
+      | (?:(?P<n>\d{1,3}(?:[\s.,]\d{3})+|\d+)\s*(?P<k>тис\.?|к\b)?\s*
            (?P<cur>грн|гривен|гривн|uah|₴|\$|дол|usd|у\.\s?о|€|євро|eur))")
 });
 
@@ -112,18 +114,32 @@ static BARE_PRICE: LazyLock<Regex> =
 static ROOMS: LazyLock<Vec<(Regex, Option<u8>)>> = LazyLock::new(|| {
     vec![
         (re(r"кімнат\w*\s*[:—-]\s*(\d)"), None),
-        (re(r"\b(\d)\s*-?\s*(?:х\s*-?\s*)?кім"), None),
-        (re(r"\b(\d)\s*к\b"), None),
+        // 2-кімн, 2-х кімнатна, 2-ох кімнатна, 1-но кімнатної, 1но, 1 кім.кв.
+        (re(r"\b(\d)\s*-?\s*(?:о?х|но|ти)?\s*-?\s*кім"), None),
+        // 3 ізольовані кімнати
+        (re(r"\b(\d)\s+(?:\w+\s+)?кімнат"), None),
+        (re(r"\b(\d)\s*-?\s*к\b"), None),
+        // 1км квартира (slang, glued; "5 км від центру" has no "квартир" after it)
+        (re(r"\b([1-4])\s*-?км\.?\s+кварт"), None),
         (re(r"одно\s*-?\s*кім|1\s*-?\s*дно\s*-?\s*кім"), Some(1)),
         (re(r"дво\s*-?\s*кім|двох\s*-?\s*кім|\b(?:дві|два)\s+(?:\w+\s+)?кімнат"), Some(2)),
         (re(r"три\s*-?\s*кім|трьох\s*-?\s*кім|\bтри\s+(?:\w+\s+)?кімнат"), Some(3)),
         (re(r"чотири\s*-?\s*кім|чотирьох\s*-?\s*кім"), Some(4)),
     ]
 });
-static STUDIO: LazyLock<Regex> = LazyLock::new(|| re(r"студі[яюї]|smart|смарт"));
-static KITCHEN_STUDIO: LazyLock<Regex> = LazyLock::new(|| re(r"кухн\w*\s*-?\s*студі"));
+static STUDIO: LazyLock<Regex> = LazyLock::new(|| re(r"студі[яюї]|студійн|smart|смарт"));
+static KITCHEN_STUDIO: LazyLock<Regex> = LazyLock::new(|| re(r"кухн\w*\s*-?\s*студі\w*"));
+/// Bedrooms, when the post never says "N-кімнатна": "окрема спальня" + kitchen-living = 1 room
+/// (Lviv counts bedrooms, not the kitchen-living room).
+static BEDROOMS: LazyLock<Vec<(Regex, u8)>> = LazyLock::new(|| {
+    vec![
+        (re(r"\b(?:3|три)\s+(?:\w+\s+)?спальн"), 3),
+        (re(r"\b(?:2|дві)\s+(?:\w+\s+)?спальн"), 2),
+        (re(r"(?:окрем\w*|ізольован\w*|відокремлен\w*)\s+спальн|спальн\w*\s+(?:кімнат\w*\s+)?(?:та|і|\+)\s+кухн"), 1),
+    ]
+});
 
-/// Rooms from the earliest mention; studio = 1 room.
+/// Rooms from the earliest mention; studio = 1 room; else counted bedrooms.
 pub fn rooms(t: &str) -> (Option<u8>, bool) {
     let found = ROOMS
         .iter()
@@ -140,11 +156,13 @@ pub fn rooms(t: &str) -> (Option<u8>, bool) {
         .map(|(_, n)| n);
     // "кухня-студія" is a kitchen-living room, not a studio flat.
     let studio = found.is_none() && STUDIO.is_match(&KITCHEN_STUDIO.replace_all(t, ""));
-    (found.or(studio.then_some(1)), studio)
+    let bedrooms = || BEDROOMS.iter().find(|(r, _)| r.is_match(t)).map(|(_, n)| *n);
+    (found.or(studio.then_some(1)).or_else(bedrooms), studio)
 }
 
-/// "поверх" as a noun only: not "поверховий" / "поверхів" (a 9-storey building is not the 9th floor).
-const FL: &str = r"(?:поверх(?:і|у|ом)?\b|поверсі|пов\b\.?)";
+/// "поверх" as a noun only: not "поверховий" / "поверхів" / "поверхня" (a 9-storey building is not the
+/// 9th floor; a cooking surface is not a floor). "повер" is a cut-off spelling ("2/5 повер буд").
+const FL: &str = r"(?:поверх(?:і|у|ом)?\b|поверсі|повер\b|пов\b\.?)";
 
 static FLOOR: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
@@ -154,37 +172,76 @@ static FLOOR: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"FL\s*[:—–-]?\s*(\d{1,2})\s*-?\s*(?:й|ий)?\s*(?:/|\\|з|із|зі)\s*(\d{1,2})",
         // 7-й поверх із 10, 3 поверх з 3
         r"\b(\d{1,2})\s*-?\s*(?:й|ий|му|ому)?\s*FL\s*(?:з|із|зі)\s*(\d{1,2})",
+        // realtor shorthand, wall type after the total: 4/5ц, 7/16ц, 12/12 ц., 2п./3ц., 14п/15, 4/9п
+        r"\b(\d{1,2})\s*п?\.?\s*/\s*(\d{1,2})\s*(?:ц|п|б|к|м)\b",
+        r"\b(\d{1,2})\s*п\.?\s*/\s*(\d{1,2})\b",
         // поверх: 5, поверх — 4-й
         r"FL\s*[:—–-]?\s*(\d{1,2})\b",
         // 5 поверсі, 8-й поверх
         r"\b(\d{1,2})\s*-?\s*(?:й|ий|му|ому)?\s*FL",
+        // a bare "2/4" or "🏗️ 3/3" alone on its line (lists of features in many posts)
+        r"(?m)^[^\w\n]*(\d{1,2})\s*/\s*(\d{1,2})[^\w\n]*(?:\([^)\n]*\))?[^\w\n]*$",
     ]
     .iter()
     .map(|p| re(&p.replace("FL", FL)))
     .collect()
 });
 
+/// "третій поверх", "на другому поверсі".
+static FLOOR_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    re(&format!(
+        r"\b(перш|друг|трет|четверт|п'ят|шост|сьом|восьм|дев'ят|десят)\w*\s+{FL}"
+    ))
+});
+
 pub fn floor(t: &str) -> Option<(u8, Option<u8>)> {
-    FLOOR.iter().find_map(|r| {
-        let c = r.captures(t)?;
-        let f: u8 = c.get(1)?.as_str().parse().ok()?;
-        let total: Option<u8> = c.get(2).and_then(|m| m.as_str().parse().ok());
-        (f >= 1 && total.is_none_or(|n| n >= f)).then_some((f, total))
+    let ok = |f: u8, total: Option<u8>| f >= 1 && f <= 40 && total.is_none_or(|n| n >= f && n <= 40);
+    FLOOR
+        .iter()
+        .find_map(|r| {
+            let c = r.captures(t)?;
+            let f: u8 = c.get(1)?.as_str().parse().ok()?;
+            let total: Option<u8> = c.get(2).and_then(|m| m.as_str().parse().ok());
+            ok(f, total).then_some((f, total))
+        })
+        .or_else(|| {
+            let w = FLOOR_WORD.captures(t)?.get(1)?.as_str();
+            let f = ["перш", "друг", "трет", "четверт", "п'ят", "шост", "сьом", "восьм", "дев'ят", "десят"]
+                .iter()
+                .position(|s| *s == w)? as u8
+                + 1;
+            Some((f, None))
+        })
+}
+
+/// Total area. Kitchen sizes ("кухня 15 м²") are skipped; "Площа: 80м" counts even without "²".
+static AREA: LazyLock<Regex> = LazyLock::new(|| {
+    // Bare "40 м" / "45 метрів" only with 2 digits and a list-like end: "300 м до зупинки" is a distance.
+    re(r"(?m)(\d{2,3}(?:[.,]\d)?)\s*(?:м²|м2|м\.?\s*кв|кв\.?\s*\\?\s*м|квм|кв2|кв\.? метр)|\b(\d{2})\s*(?:м|метр\w*)\b[^\S\n]*(?:на\b|,|\(|$)")
+});
+static AREA_LABEL: LazyLock<Regex> =
+    LazyLock::new(|| re(r"площ\w*[^\d\n]{0,15}(\d{2,3}(?:[.,]\d)?)(?:\D|$)"));
+static KITCHEN: LazyLock<Regex> = LazyLock::new(|| re(r"кухн\w*[^\d\n]{0,12}$"));
+
+pub fn area(t: &str) -> Option<f32> {
+    let num = |s: &str| s.replace(',', ".").parse::<f32>().ok().filter(|a| (12.0..=400.0).contains(a));
+    if let Some(a) = AREA_LABEL.captures(t).and_then(|c| num(c.get(1)?.as_str())) {
+        return Some(a);
+    }
+    AREA.captures_iter(t).find_map(|c| {
+        let m = c.get(1).or_else(|| c.get(2))?;
+        // "Кухня: 15 м²" is not the flat's area.
+        let before = &t[..m.start()];
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        (!KITCHEN.is_match(&before[line_start..])).then(|| num(m.as_str())).flatten()
     })
 }
 
-static AREA: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(\d{2,3}(?:[.,]\d)?)\s*(?:м²|м2|м\.?\s*кв|кв\.?\s*м|квм|кв\.? метр)"));
-
-pub fn area(t: &str) -> Option<f32> {
-    AREA.captures(t)?.get(1)?.as_str().replace(',', ".").parse().ok()
-}
-
 static INDIVIDUAL: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"інд[иу]відуальн\w*(?:\s+\S+){0,2}\s+опален|опален\w*\s*[:—–-]?\s*інд[иу]відуальн|котел\b|котла\b|власн\w* котельн|автономн\w* опален|електроопален|електричн\w* опален")
+    re(r"інд[иу]відуальн\w*(?:\s+\S+){0,2}\s+опален|опален\w*\s*[:—–-]?\s*(?:інд[иу]відуальн|газов|електр|конвектор|пічн|автономн)|котел\b|котла\b|власн\w* котельн|автономн\w* опален|електроопален|електричн\w* опален|газов\w*\s+опален|пічн\w*\s+(?:\S+\s+)?опален|конвектор")
 });
 static CENTRAL: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"центральн\w*\s+опален|опален\w*\s*[:—–-]?\s*(?:центральн|від будинков)|будинков\w* котельн|від центрального")
+    re(r"централ\w*\s+опален|опален\w*\s*[:—–-]?\s*(?:центральн|централізован|будинков|від будинков)|будинков\w* котельн|будинков\w*\s+опален|дахов\w*\s+(?:газов\w*\s+)?котельн|від центрального")
 });
 
 pub fn heating(t: &str) -> Heating {
@@ -228,13 +285,17 @@ pub fn phone(text: &str) -> Option<String> {
     })
 }
 
-static NOT_FLAT: LazyLock<Regex> = LazyLock::new(|| re(r"будин|котедж|приміщенн|магазин|офіс|склад|комерці|\bбар(?:у|\b)|кафе|ресторан|кав'ярн|салон"));
+static NOT_FLAT: LazyLock<Regex> = LazyLock::new(|| re(r"будин|котедж|приміщен|магазин|офіс|склад|комерці|\bмаф|гараж|\bсто\b|будівл|\bбар(?:у|\b)|кафе|ресторан|кав'ярн|салон"));
 static RENTED: LazyLock<Regex> = LazyLock::new(|| re(r"\bздано|стоп\s*🛑|🛑"));
+
+/// A room in a shared flat ("оренда кімнати", "підселення"), not a flat.
+static ROOM_SHARE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"оренд\w*\s+кімнати|здається\s+(?:\w+\s+)?кімната|підселенн"));
 
 /// Head of the post (first ~150 chars) says what is rented.
 fn not_flat(t: &str) -> bool {
     let head: String = t.chars().take(150).collect();
-    NOT_FLAT.is_match(&head) && !head.contains("квартир")
+    (NOT_FLAT.is_match(&head) && !head.contains("квартир")) || ROOM_SHARE.is_match(&head)
 }
 
 pub fn parse(text: &str) -> Parsed {
@@ -337,6 +398,53 @@ mod tests {
         assert_eq!(phone("+380938834***Здано✅").as_deref(), None);
         assert_eq!(phone("066-22-8***").as_deref(), None);
         assert_eq!(phone("Ціна 15000 грн, 47 кв м").as_deref(), None);
+    }
+
+    /// Spellings found in 30 days of @orendakvartyr_ua (Nov 2026) that the first parser missed.
+    #[test]
+    fn real_channel_spellings() {
+        // floor
+        assert_eq!(p("✔️2 поверх").floor, Some((2, None)));
+        assert_eq!(p("Третій поверх, площа 45 м2").floor, Some((3, None)));
+        assert_eq!(p("Оренда Чешка 2 кім на вул. Під Голоском, 52 кв.м., 4/5ц, ремонт").floor, Some((4, Some(5))));
+        assert_eq!(p("36 м.кв., 12/12 ц., сучасний ремонт").floor, Some((12, Some(12))));
+        assert_eq!(p("60м.кв. 2п./3ц.").floor, Some((2, Some(3))));
+        assert_eq!(p("ЖК Авалон на пр. Чорновола 16Ж. 14п/15.").floor, Some((14, Some(15))));
+        assert_eq!(p("- 2/5 повер буд").floor, Some((2, Some(5))));
+        assert_eq!(p("Характеристики:\n🏗️ 3/3 (парадний вхід)\n▫️ кухня").floor, Some((3, Some(3))));
+        assert_eq!(p("- Індукційна варильна поверхня").floor, None);
+        // rooms
+        assert_eq!(p("Здається простора 2-ох кімнатна квартира").rooms, Some(2));
+        assert_eq!(p("Оренда 1но кімнатної кварти в новобудові").rooms, Some(1));
+        assert_eq!(p("• 3 ізольовані кімнати").rooms, Some(3));
+        assert_eq!(p("Оренда 2-к квартири в особняку").rooms, Some(2));
+        assert_eq!(p("🔹 Кухня-студія + окрема спальня з балконом").rooms, Some(1));
+        assert_eq!(p("— Планування: кухня-вітальня, 3 спальні, 2 санвузли").rooms, Some(3));
+        let s = p("Пропонується в оренду сучасна квартира студійного типу");
+        assert_eq!((s.rooms, s.studio), (Some(1), true));
+        // heating
+        assert_eq!(p("Будинкове опалення. Підігрів підлоги.").heating, Heating::Central);
+        assert_eq!(p("— Опалення: будинкове").heating, Heating::Central);
+        assert_eq!(p("Централізоване опалення").heating, Heating::Central);
+        assert_eq!(p("✔️ Опалення: дахова газова котельня — економне;").heating, Heating::Central);
+        assert_eq!(p("• газове опалення").heating, Heating::Individual);
+        assert_eq!(p("- Пічне газове опалення").heating, Heating::Individual);
+        assert_eq!(p("3/3,опалення конвектор, пральна машинка").heating, Heating::Individual);
+        assert_eq!(p("опалення автономне,1пов").heating, Heating::Individual);
+        // area
+        assert_eq!(p("Загальна площа 87 кв \\м. Квартира").area, Some(87.0));
+        assert_eq!(p("Площа: 80м").area, Some(80.0));
+        assert_eq!(p("- 56кв2").area, Some(56.0));
+        assert_eq!(p("Загальна площа - 45").area, Some(45.0));
+        assert_eq!(p("Квартира 40 м на 7 поверсі з 11").area, Some(40.0));
+        assert_eq!(p("Кухня: 15 м²\nПлоща: 120 м²").area, Some(120.0));
+        assert_eq!(p("зупинка 300 м, багато паркомісць").area, None);
+        // price
+        assert_eq!(p("💸 17,000 грн").price, Some(Price { amount: 17000, currency: Currency::Uah }));
+        // not a flat
+        assert!(p("🏠 ОРЕНДА КІМНАТИ | ПІДСЕЛЕННЯ ДО ВЛАСНИЦІ").not_flat);
+        assert!(p("Оренда сучасного МАФу на вул. Наукова, 48").not_flat);
+        assert!(p("Оренда двох приміщень по 10 м2").not_flat);
     }
 
     #[test]

@@ -10,11 +10,16 @@ use std::sync::LazyLock;
 
 /// "Шукаю квартиру" posts: people looking for a flat, not offering one.
 static SEEKING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bшука(ю|ємо|є)\b|знайти\b[^.\n]{0,25}(житло|квартир)|\b(у|в) бюджеті").unwrap()
+    Regex::new(
+        r"(?i)\bшука(ю|ємо|є)\b|знайти\b[^.\n]{0,25}(житло|квартир)|\b(у|в) бюджеті|\bвинайм(у|емо)\b|\bзніму\b|\bзнімемо\b|\bорендую\b|\bорендуємо\b|готов\w*\s+(?:\S+\s+)?орендувати|\bдо\s+\d[\d\s.]*\s*(?:грн|тис)?\s+за\s+квартир|бюджет\w*\s*:?\s*до\s+\d",
+    )
+    .unwrap()
 });
-/// Landlords also write "шукаємо орендаря / квартирантів"; those are offers.
-static WANTS_TENANT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(орендар|квартирант|мешканц|наймач)").unwrap());
+/// Landlords also write "шукаємо орендаря / квартирантів"; those are offers. Only right after the verb:
+/// a seeker's "оплату орендарю гарантуємо" further on does not turn the post into an offer.
+static WANTS_TENANT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bшука\w*\s+(?:\S+\s+){0,2}(?:орендар|квартирант|мешканц|наймач)").unwrap()
+});
 
 pub fn is_seeker(text: &str) -> bool {
     SEEKING.is_match(text) && !WANTS_TENANT.is_match(text)
@@ -41,6 +46,10 @@ pub fn decide(text: &str, p: &Parsed, place: &Place, f: &Filter, rates: Option<R
     }
     if is_seeker(text) {
         return Err(Skip::Seeker);
+    }
+    // Channel chatter ("Тривога у Львові", "Всьо, здано"): no price, rooms, area or floor at all.
+    if p.price.is_none() && p.rooms.is_none() && p.area.is_none() && p.floor.is_none() {
+        return Err(Skip::Empty);
     }
     if p.rented {
         return Err(Skip::Rented);
@@ -90,6 +99,12 @@ mod tests {
         assert!(is_seeker("Шукаю 1к квартиру на Франківському до 15000"));
         assert!(is_seeker("Шукаємо двокімнатну, без тварин"));
         assert!(is_seeker("Дівчина шукає квартиру"));
+        // Real seekers that slipped through before.
+        assert!(is_seeker("Алярм‼️ Винайму 1км квартиру на довгострокову оренду. Працююча дівчина."));
+        assert!(is_seeker("Орендуємо двох чи трьох кімнатну квартиру у місті Львів від власників"));
+        assert!(is_seeker("Готовий сьогодні орендувати квартиру на довгострок."));
+        assert!(is_seeker("Ми молода пара. 💰 Бюджет: до 700 $ + комунальні послуги"));
+        assert!(is_seeker("Шукаємо студію. Обоє працюємо, орендарю оплату гарантуємо вчасно."));
         assert!(is_seeker("Не полишаю спроб знайти у Львові житло. В бюджеті орієнтовно 500$"));
         assert!(!is_seeker("Шукаємо охайних орендарів у 1к на Героїв УПА"));
         assert!(!is_seeker("Шукаю квартиранта, Київська 5"));
