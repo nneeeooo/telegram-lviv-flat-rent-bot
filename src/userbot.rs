@@ -10,7 +10,9 @@ use grammers_client::session::storages::MemorySession;
 use grammers_client::session::types::PeerRef;
 use grammers_client::media::{Media, Photo};
 use grammers_client::message::Message;
-use grammers_client::{Client, SenderPool, SignInError};
+use grammers_client::client::PasswordToken;
+use grammers_client::session::Session as _;
+use grammers_client::{Client, InvocationError, SenderPool, tl};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -20,6 +22,7 @@ pub struct Userbot {
     pub client: Client,
     session: Arc<MemorySession>,
     session_path: PathBuf,
+    api_id: i32,
 }
 
 /// One chat we read: a channel or a bot's private chat with us.
@@ -34,7 +37,7 @@ impl Userbot {
         let session = Arc::new(session::load(&session_path)?);
         let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
         tokio::spawn(runner.run());
-        Ok(Userbot { client: Client::new(handle), session, session_path })
+        Ok(Userbot { client: Client::new(handle), session, session_path, api_id })
     }
 
     pub fn save(&self) -> Result<()> {
@@ -49,26 +52,91 @@ impl Userbot {
     }
 
     /// Interactive login: phone, code from Telegram, 2FA password (hidden input).
+    /// An empty code asks Telegram to resend it another way (usually SMS, then a call).
+    /// Raw TL calls instead of `request_login_code`/`sign_in`: grammers keeps the code hash private,
+    /// and `auth.resendCode` needs it.
     pub async fn login(&self, api_hash: &str) -> Result<()> {
         if self.client.is_authorized().await? {
             println!("Already logged in.");
             return self.save();
         }
         let phone = prompt("Phone (international format, e.g. +380...): ")?;
-        let token = self.client.request_login_code(&phone, api_hash).await?;
-        let code = prompt("Code from Telegram: ")?;
-        match self.client.sign_in(&token, &code).await {
-            Ok(_) => {}
-            Err(SignInError::PasswordRequired(pt)) => {
-                let hint = pt.hint().unwrap_or("none").to_string();
-                let pw = rpassword::prompt_password(format!("2FA password (hint: {hint}): "))?;
-                self.client.check_password(pt, pw.trim()).await.map_err(|e| anyhow!("{e}"))?;
+        let mut sent = self.send_code(&phone, api_hash).await?;
+        loop {
+            describe_sent(&sent);
+            let code = prompt("Code (empty = resend another way): ")?;
+            if code.is_empty() {
+                let req = tl::functions::auth::ResendCode {
+                    phone_number: phone.clone(),
+                    phone_code_hash: sent.phone_code_hash.clone(),
+                    reason: None,
+                };
+                sent = match self.client.invoke(&req).await? {
+                    tl::enums::auth::SentCode::Code(c) => c,
+                    _ => bail!("unexpected resendCode answer"),
+                };
+                continue;
             }
-            Err(e) => bail!("sign in: {e}"),
+            let req = tl::functions::auth::SignIn {
+                phone_number: phone.clone(),
+                phone_code_hash: sent.phone_code_hash.clone(),
+                phone_code: Some(code),
+                email_verification: None,
+            };
+            match self.client.invoke(&req).await {
+                Ok(tl::enums::auth::Authorization::Authorization(_)) => break,
+                Ok(tl::enums::auth::Authorization::SignUpRequired(_)) => {
+                    bail!("this phone has no Telegram account: sign up in the app first")
+                }
+                Err(e) if e.is("SESSION_PASSWORD_NEEDED") => {
+                    let pw: tl::types::account::Password =
+                        self.client.invoke(&tl::functions::account::GetPassword {}).await?.into();
+                    let pt = PasswordToken::new(pw);
+                    let hint = pt.hint().unwrap_or("none").to_string();
+                    let pw = rpassword::prompt_password(format!("2FA password (hint: {hint}): "))?;
+                    self.client.check_password(pt, pw.trim()).await.map_err(|e| anyhow!("{e}"))?;
+                    break;
+                }
+                Err(e) if e.is("PHONE_CODE_INVALID") => println!("Invalid code, try again."),
+                Err(e) => bail!("sign in: {e}"),
+            }
         }
         self.save()?;
         println!("Logged in. Session saved to {}", self.session_path.display());
         Ok(())
+    }
+
+    /// `auth.sendCode`; on 303 (phone lives on another DC) switch home DC and retry, as grammers does.
+    async fn send_code(&self, phone: &str, api_hash: &str) -> Result<tl::types::auth::SentCode> {
+        let req = tl::functions::auth::SendCode {
+            phone_number: phone.to_string(),
+            api_id: self.api_id,
+            api_hash: api_hash.to_string(),
+            settings: tl::types::CodeSettings {
+                allow_flashcall: false,
+                current_number: false,
+                allow_app_hash: false,
+                allow_missed_call: false,
+                allow_firebase: false,
+                logout_tokens: None,
+                token: None,
+                app_sandbox: None,
+                unknown_number: false,
+            }
+            .into(),
+        };
+        let res = match self.client.invoke(&req).await {
+            Err(InvocationError::Rpc(e)) if e.code == 303 => {
+                let dc = e.value.context("303 without DC id")? as i32;
+                self.session.set_home_dc_id(dc).await?;
+                self.client.invoke(&req).await?
+            }
+            r => r?,
+        };
+        match res {
+            tl::enums::auth::SentCode::Code(c) => Ok(c),
+            _ => bail!("unexpected sendCode answer"),
+        }
     }
 
     pub async fn resolve(&self, name: &str, is_channel: bool) -> Result<Source> {
@@ -210,4 +278,23 @@ fn prompt(msg: &str) -> Result<String> {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
     Ok(line.trim().to_string())
+}
+
+/// Tells where Telegram sent the login code.
+fn describe_sent(sent: &tl::types::auth::SentCode) {
+    use tl::enums::auth::SentCodeType as T;
+    let how = match &sent.r#type {
+        T::App(_) => "to your Telegram app (chat \"Telegram\" on a logged-in device)".to_string(),
+        T::Sms(_) | T::SmsWord(_) | T::SmsPhrase(_) => "by SMS".to_string(),
+        T::Call(_) => "by phone call".to_string(),
+        T::FlashCall(_) | T::MissedCall(_) => "by missed call (code = last digits of caller)".to_string(),
+        T::EmailCode(e) => format!("by email to {}", e.email_pattern),
+        T::FragmentSms(f) => format!("via Fragment: {}", f.url),
+        _ => "another way (not supported here)".to_string(),
+    };
+    println!("Code sent {how}.");
+    if let Some(next) = &sent.next_type {
+        let wait = sent.timeout.map(|t| format!(" after {t}s")).unwrap_or_default();
+        println!("Empty code resends it as {next:?}{wait}.");
+    }
 }
