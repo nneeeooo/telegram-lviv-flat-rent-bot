@@ -236,7 +236,11 @@ async fn main() -> Result<()> {
     // Start is logged only: a chat message on every restart is noise.
     println!("started: {} sources, poll every {}s\n{}", sources.len(), poll.as_secs(), cfg.summary());
 
-    tokio::spawn(answer_start(tg::Bot::new(&token), chats.clone(), cfg.summary()));
+    if let Err(e) = bot.set_commands(&[("start", "Статус бота"), ("refresh", "Перевірити зараз")]).await {
+        eprintln!("setMyCommands: {e:#}");
+    }
+    let refresh = std::sync::Arc::new(tokio::sync::Notify::new());
+    tokio::spawn(answer_start(tg::Bot::new(&token), chats.clone(), refresh.clone()));
 
     let mut lun_at: Option<Instant> = None;
     loop {
@@ -259,14 +263,18 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        tokio::time::sleep(poll).await;
+        // /refresh wakes the loop early and forces a LUN pass too.
+        tokio::select! {
+            _ = tokio::time::sleep(poll) => {}
+            _ = refresh.notified() => lun_at = None,
+        }
     }
 }
 
 /// Answer `/start` with a ping, so recipients can check the bot is alive. Only the configured
-/// recipients get an answer; anyone else who finds the bot is ignored.
-async fn answer_start(bot: tg::Bot, chats: Vec<i64>, summary: String) {
-    let ping = format!("✅ Бот працює.\nКанал Віктора й @homierentbot перевіряю щохвилини, LUN кожні 5 хв.\n\n{summary}");
+/// recipients get an answer; anyone else who finds the bot is ignored. `/refresh` triggers a check now.
+async fn answer_start(bot: tg::Bot, chats: Vec<i64>, refresh: std::sync::Arc<tokio::sync::Notify>) {
+    let ping ="✅ Бот працює. Канали щохвилини, LUN кожні 5 хв. /refresh — перевірити зараз.";
     let mut offset = 0;
     loop {
         match bot.updates(offset).await {
@@ -274,9 +282,15 @@ async fn answer_start(bot: tg::Bot, chats: Vec<i64>, summary: String) {
                 for u in updates {
                     offset = u.update_id + 1;
                     let Some(m) = u.message else { continue };
-                    let is_start = m.text.as_deref().is_some_and(|t| t.trim_start().starts_with("/start"));
+                    let text = m.text.as_deref().unwrap_or("").trim_start();
+                    if text.starts_with("/refresh") && chats.contains(&m.chat.id) {
+                        refresh.notify_one();
+                        bot.send(m.chat.id, "🔄 Перевіряю зараз…").await.ok();
+                        continue;
+                    }
+                    let is_start = text.starts_with("/start");
                     if is_start && chats.contains(&m.chat.id) {
-                        if let Err(e) = bot.send(m.chat.id, &ping).await {
+                        if let Err(e) = bot.send(m.chat.id, ping).await {
                             eprintln!("/start reply to {}: {e:#}", m.chat.id);
                         }
                     }

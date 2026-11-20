@@ -71,6 +71,12 @@ impl Bot {
         self.call("sendMessage", Body::Json(json!({"chat_id": chat, "text": text}))).await
     }
 
+    /// Command menu shown by Telegram's menu button.
+    pub async fn set_commands(&self, cmds: &[(&str, &str)]) -> Result<()> {
+        let list: Vec<serde_json::Value> = cmds.iter().map(|(c, d)| json!({"command": c, "description": d})).collect();
+        self.call("setMyCommands", Body::Json(json!({"commands": list}))).await
+    }
+
     /// Long-poll for messages sent to the bot (waits up to 50 s; the HTTP timeout is 60 s).
     pub async fn updates(&self, offset: i64) -> Result<Vec<Update>> {
         let r: UpdatesResp = self
